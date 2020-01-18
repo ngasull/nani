@@ -156,7 +156,7 @@ impl<'a> InputIter for Span<'a> {
 
 #[macro_export]
 macro_rules! impl_compare {
-    ( $fragment_type:ty, $compare_to_type:ty ) => {
+    ( $compare_to_type:ty ) => {
         impl<'a, 'b> Compare<$compare_to_type> for Span<'a> {
             #[inline(always)]
             fn compare(&self, t: $compare_to_type) -> CompareResult {
@@ -171,9 +171,7 @@ macro_rules! impl_compare {
     };
 }
 
-//impl_compare!(&'b str, &'a str);
-impl_compare!(&'b [u8], &'a [u8]);
-//impl_compare!(&'b [u8], &'a str);
+impl_compare!(&'a [u8]);
 
 impl<'a, 'b> Compare<Span<'b>> for Span<'a> {
     #[inline(always)]
@@ -216,7 +214,7 @@ macro_rules! impl_slice_range {
                     col: if line == self.line {
                         self.col + col
                     } else {
-                        col
+                        col + 1
                     },
                     offset: self.offset + consumed_len,
                     fragment: Ascii {
