@@ -105,7 +105,7 @@ fn constant_assignment(s: Span) -> IResult<Span, ConstantAssignment> {
     return Ok((
         s,
         ConstantAssignment {
-            name,
+            name: Ascii::from(name),
             expression: expr,
             pos: pos.to(end_pos),
         },
@@ -131,7 +131,7 @@ fn function_definition(s: Span) -> IResult<Span, FunctionDefinition> {
         s,
         FunctionDefinition {
             pos: pos.to(end_pos),
-            name,
+            name: Ascii::from(name),
             scope,
             args,
             body,
@@ -147,7 +147,7 @@ fn function_argument(s: Span) -> IResult<Span, FunctionArgument> {
         s,
         FunctionArgument {
             pos: pos.to(end_pos),
-            name,
+            name: Ascii::from(name),
             vartype: Vartype::Inferred,
         },
     ))
@@ -195,7 +195,7 @@ fn variable_assignment(s: Span) -> IResult<Span, Statement> {
     return Ok((
         s,
         Statement::VariableAssignment {
-            name,
+            name: Ascii::from(name),
             expression: expr,
             pos: pos.to(end_pos),
         },
@@ -216,7 +216,7 @@ fn function_call(s: Span) -> IResult<Span, Expression> {
         s,
         Expression::FunctionCall {
             pos: pos.to(end_pos),
-            name,
+            name: Ascii::from(name),
             scope,
             args: Box::new(args),
         },
@@ -281,8 +281,7 @@ fn value_bool(s: Span) -> IResult<Span, Value> {
 
 fn value_integer(s: Span) -> IResult<Span, Value> {
     let (s, i) = digit1(s)?;
-    let i = i
-        .fragment
+    let i = Ascii::from(i.fragment)
         .to_string()
         .parse()
         .or_else(|_| Err(nom::Err::Failure(error_position!(s, ErrorKind::Digit))))?;
@@ -293,7 +292,7 @@ fn value_decimal(s: Span) -> IResult<Span, Value> {
     let (s, n) = digit1(s)?;
     let (s, _) = byte(b'.')(s)?;
     let (s, d) = digit1(s)?;
-    let i = format!("{}.{}", n.fragment, d.fragment)
+    let i = format!("{}.{}", Ascii::from(n.fragment), Ascii::from(d.fragment))
         .parse()
         .or_else(|_| Err(nom::Err::Failure(error_position!(s, ErrorKind::Float))))?;
     Ok((s, Value::Decimal(i)))
@@ -305,19 +304,19 @@ fn value_string(s: Span) -> IResult<Span, Value> {
         escaped(is_not("\"\\"), '\\', alt((byte(b'"'), byte(b'\\')))),
         byte(b'"'),
     )(s)?;
-    if str_literal.fragment.bytes.iter().all(|&c| is_ascii(c)) {
-        Ok((s, Value::String(str_literal.fragment)))
+    if str_literal.fragment.iter().all(|&c| is_ascii(c)) {
+        Ok((s, Value::String(Ascii::from(str_literal.fragment))))
     } else {
         Err(nom::Err::Failure(error_position!(s, ErrorKind::Verify)))
     }
 }
 
-fn snakecase_upper(s: Span) -> IResult<Span, Ascii> {
+fn snakecase_upper(s: Span) -> IResult<Span, &[u8]> {
     let (s, n) = recognize(separated_nonempty_list(byte(b'_'), take_while1(is_upper)))(s)?;
     Ok((s, n.fragment))
 }
 
-fn snakecase_lower(s: Span) -> IResult<Span, Ascii> {
+fn snakecase_lower(s: Span) -> IResult<Span, &[u8]> {
     let (s, n) = recognize(separated_nonempty_list(byte(b'_'), take_while1(is_lower)))(s)?;
     Ok((s, n.fragment))
 }
@@ -374,7 +373,7 @@ fn eof<'a, Error: ParseError<Span<'a>>>(input: Span<'a>) -> IResult<Span<'a>, u8
     } else {
         Err(nom::Err::Error(Error::from_char(
             input,
-            char::from(input.fragment.bytes[0]),
+            char::from(input.fragment[0]),
         )))
     }
 }
@@ -390,7 +389,7 @@ where
     }
 }
 
-fn nani_structure<'a>(input: Ascii<'a>) -> IResult<Span<'a>, Program<'a>> {
+fn nani_structure<'a>(input: &'a [u8]) -> IResult<Span<'a>, Program<'a>> {
     let s = Span::new(input);
     let (s, constants) = many0(on_a_line(constant_assignment))(s)?;
     let (s, functions) = many0(on_a_line(function_definition))(s)?;
@@ -405,14 +404,14 @@ fn nani_structure<'a>(input: Ascii<'a>) -> IResult<Span<'a>, Program<'a>> {
     ))
 }
 
-pub fn parse_nani<'a>(input: Ascii<'a>) -> Result<Program<'a>, String> {
+pub fn parse_nani<'a>(input: &'a [u8]) -> Result<Program<'a>, String> {
     match nani_structure(input) {
         Ok((_, program)) => Ok(program),
         Err(nom::Err::Failure((s, _))) => Err(format!(
             "Unexpected token [L{} C{}]: {}",
             s.line,
             s.col,
-            char::from(s.fragment.bytes[0])
+            char::from(s.fragment[0])
         )),
         _ => panic!("Unexpected end of parsing"),
     }
@@ -435,8 +434,7 @@ mod tests {
 
     #[test]
     fn it_parses_a_constant_definition<'a>() {
-        let (_, c) =
-            constant_assignment(Span::new(Ascii::from(&b"THIS_IS_CONSTANT = 42"[..]))).unwrap();
+        let (_, c) = constant_assignment(Span::new(&b"THIS_IS_CONSTANT = 42"[..])).unwrap();
         assert_eq!(
             c,
             ConstantAssignment {
@@ -452,7 +450,7 @@ mod tests {
 
     #[test]
     fn it_parses_constant_definitions() {
-        let program = parse_nani(Ascii::from(
+        let program = parse_nani(
             &br#"
 THIS_IS_CONSTANT = 42
 THIS_ALSO_IS = 666
@@ -464,7 +462,7 @@ initialize() {
   s = "abc"
 }
         "#[..],
-        ))
+        )
         .unwrap();
         assert_eq!(
             program,

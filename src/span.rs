@@ -1,4 +1,3 @@
-use crate::ascii::Ascii;
 use nom::{
     error::{ErrorKind, ParseError},
     AsBytes, Compare, CompareResult, Err, FindSubstring, IResult, InputIter, InputLength,
@@ -24,11 +23,11 @@ pub struct Span<'a> {
     pub offset: usize,
     pub line: usize,
     pub col: usize,
-    pub fragment: Ascii<'a>,
+    pub fragment: &'a [u8],
 }
 
 impl<'a> Span<'a> {
-    pub fn new(program: Ascii) -> Span {
+    pub fn new(program: &'a [u8]) -> Span {
         Span {
             line: 1,
             col: 1,
@@ -51,9 +50,7 @@ impl<'a> Span<'a> {
 
 impl<'a> PartialEq for Span<'a> {
     fn eq(&self, other: &Self) -> bool {
-        self.line == other.line
-            && self.offset == other.offset
-            && self.fragment.bytes == other.fragment.bytes
+        self.line == other.line && self.offset == other.offset && self.fragment == other.fragment
     }
 }
 
@@ -61,13 +58,13 @@ impl<'a> Eq for Span<'a> {}
 
 impl<'a> AsBytes for Span<'a> {
     fn as_bytes(&self) -> &[u8] {
-        self.fragment.bytes
+        self.fragment
     }
 }
 
 impl<'a> InputLength for Span<'a> {
     fn input_len(&self) -> usize {
-        self.fragment.bytes.len()
+        self.fragment.len()
     }
 }
 
@@ -107,7 +104,7 @@ where
     where
         P: Fn(Self::Item) -> bool,
     {
-        match self.fragment.bytes.position(predicate) {
+        match self.fragment.position(predicate) {
             Some(n) => Ok(self.take_split(n)),
             None => Err(Err::Incomplete(nom::Needed::Size(1))),
         }
@@ -121,7 +118,7 @@ where
     where
         P: Fn(Self::Item) -> bool,
     {
-        match self.fragment.bytes.position(predicate) {
+        match self.fragment.position(predicate) {
             Some(0) => Err(Err::Error(E::from_error_kind(self.clone(), e))),
             Some(n) => Ok(self.take_split(n)),
             None => Err(Err::Incomplete(nom::Needed::Size(1))),
@@ -136,11 +133,11 @@ where
     where
         P: Fn(Self::Item) -> bool,
     {
-        match self.fragment.bytes.position(predicate) {
+        match self.fragment.position(predicate) {
             Some(0) => Err(Err::Error(E::from_error_kind(self.clone(), e))),
             Some(n) => Ok(self.take_split(n)),
             None => {
-                if self.fragment.bytes.input_len() == 0 {
+                if self.fragment.input_len() == 0 {
                     Err(Err::Error(E::from_error_kind(self.clone(), e)))
                 } else {
                     Ok(self.take_split(self.input_len()))
@@ -156,22 +153,22 @@ impl<'a> InputIter for Span<'a> {
     type IterElem = Map<Iter<'a, Self::Item>, fn(&u8) -> u8>;
     #[inline]
     fn iter_indices(&self) -> Self::Iter {
-        self.fragment.bytes.iter_indices()
+        self.fragment.iter_indices()
     }
     #[inline]
     fn iter_elements(&self) -> Self::IterElem {
-        self.fragment.bytes.iter_elements()
+        self.fragment.iter_elements()
     }
     #[inline]
     fn position<P>(&self, predicate: P) -> Option<usize>
     where
         P: Fn(Self::Item) -> bool,
     {
-        self.fragment.bytes.position(predicate)
+        self.fragment.position(predicate)
     }
     #[inline]
     fn slice_index(&self, count: usize) -> Option<usize> {
-        self.fragment.bytes.slice_index(count)
+        self.fragment.slice_index(count)
     }
 }
 
@@ -181,12 +178,12 @@ macro_rules! impl_compare {
         impl<'a, 'b> Compare<$compare_to_type> for Span<'a> {
             #[inline(always)]
             fn compare(&self, t: $compare_to_type) -> CompareResult {
-                self.fragment.bytes.compare(t)
+                self.fragment.compare(t)
             }
 
             #[inline(always)]
             fn compare_no_case(&self, t: $compare_to_type) -> CompareResult {
-                self.fragment.bytes.compare_no_case(t)
+                self.fragment.compare_no_case(t)
             }
         }
     };
@@ -197,12 +194,12 @@ impl_compare!(&'a [u8]);
 impl<'a, 'b> Compare<Span<'b>> for Span<'a> {
     #[inline(always)]
     fn compare(&self, t: Span<'b>) -> CompareResult {
-        self.fragment.bytes.compare(t.fragment.bytes)
+        self.fragment.compare(t.fragment)
     }
 
     #[inline(always)]
     fn compare_no_case(&self, t: Span<'b>) -> CompareResult {
-        self.fragment.bytes.compare_no_case(t.fragment.bytes)
+        self.fragment.compare_no_case(t.fragment)
     }
 }
 
@@ -214,18 +211,16 @@ macro_rules! impl_slice_range {
                 if $can_return_self(&range) {
                     return self.clone();
                 }
-                let next_fragment = self.fragment.bytes.slice(range);
-                let consumed_len = self.fragment.bytes.offset(&next_fragment);
+                let next_fragment = self.fragment.slice(range);
+                let consumed_len = self.fragment.offset(&next_fragment);
                 if consumed_len == 0 {
                     return Span {
-                        fragment: Ascii {
-                            bytes: next_fragment,
-                        },
+                        fragment: next_fragment,
                         ..*self
                     };
                 }
 
-                let consumed = self.fragment.bytes.slice(..consumed_len);
+                let consumed = self.fragment.slice(..consumed_len);
                 let (line, col) = consumed
                     .split(|&b| b == b'\n')
                     .fold((self.line - 1, self.col), |(l, _), bs| (l + 1, bs.len()));
@@ -238,9 +233,7 @@ macro_rules! impl_slice_range {
                         col + 1
                     },
                     offset: self.offset + consumed_len,
-                    fragment: Ascii {
-                        bytes: next_fragment,
-                    },
+                    fragment: next_fragment,
                 }
             }
         }
@@ -255,14 +248,14 @@ impl_slice_range! {RangeFull, |_| true}
 impl<'a> FindSubstring<&'a str> for Span<'a> {
     #[inline]
     fn find_substring(&self, substr: &'a str) -> Option<usize> {
-        self.fragment.bytes.find_substring(substr)
+        self.fragment.find_substring(substr)
     }
 }
 
 impl<'a, R: FromStr> ParseTo<R> for Span<'a> {
     #[inline]
     fn parse_to(&self) -> Option<R> {
-        self.fragment.bytes.parse_to()
+        self.fragment.parse_to()
     }
 }
 
