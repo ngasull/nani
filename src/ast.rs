@@ -301,7 +301,11 @@ fn value_decimal(s: Span) -> IResult<Span, Value> {
 fn value_string(s: Span) -> IResult<Span, Value> {
     let (s, str_literal) = delimited(
         byte(b'"'),
-        escaped(is_not("\"\\"), '\\', alt((byte(b'"'), byte(b'\\')))),
+        required(escaped(
+            is_not("\"\\"),
+            '\\',
+            alt((byte(b'"'), byte(b'\\'))),
+        )),
         byte(b'"'),
     )(s)?;
     if str_literal.fragment.iter().all(|&c| is_ascii(c)) {
@@ -407,12 +411,18 @@ fn nani_structure<'a>(input: &'a [u8]) -> IResult<Span<'a>, Program<'a>> {
 pub fn parse_nani<'a>(input: &'a [u8]) -> Result<Program<'a>, String> {
     match nani_structure(input) {
         Ok((_, program)) => Ok(program),
-        Err(nom::Err::Failure((s, _))) => Err(format!(
-            "Unexpected token [L{} C{}]: {}",
-            s.line,
-            s.col,
-            char::from(s.fragment[0])
-        )),
+        Err(nom::Err::Failure((s, _))) if s.fragment.len() > 0 => {
+            match AsciiChar::try_from(s.fragment[0]) {
+                Ok(token) => Err(format!(
+                    "Unexpected token [L{} C{}]: {}",
+                    s.line, s.col, token
+                )),
+                Err(_) => Err(format!(
+                    "Unexpected non-ASCII byte at [L{} C{}]: {}",
+                    s.line, s.col, s.fragment[0]
+                )),
+            }
+        }
         _ => panic!("Unexpected end of parsing"),
     }
 }
