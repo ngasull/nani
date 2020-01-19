@@ -10,6 +10,22 @@ use std::slice::Iter;
 use std::str::FromStr;
 
 #[derive(Debug, Clone, Copy)]
+pub struct AstSpan {
+    pub offset: usize,
+    pub line: usize,
+    pub col: usize,
+    pub end_offset: usize,
+    pub end_line: usize,
+    pub end_col: usize,
+}
+
+impl PartialEq for AstSpan {
+    fn eq(&self, other: &Self) -> bool {
+        self.offset == other.offset && self.end_offset == other.end_offset
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct Span<'a> {
     pub offset: usize,
     pub line: usize,
@@ -24,6 +40,17 @@ impl<'a> Span<'a> {
             col: 1,
             offset: 0,
             fragment: program,
+        }
+    }
+
+    pub fn to(self, end: Self) -> AstSpan {
+        AstSpan {
+            offset: self.offset,
+            line: self.line,
+            col: self.col,
+            end_offset: end.offset,
+            end_line: end.line,
+            end_col: end.col,
         }
     }
 }

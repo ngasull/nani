@@ -1,7 +1,7 @@
 #[macro_use]
 extern crate nom;
 
-use crate::span::{position, Span};
+use crate::span::{position, AstSpan, Span};
 use nom::{
     branch::{alt, permutation},
     bytes::complete::{tag, take_while1},
@@ -85,21 +85,21 @@ pub struct Program<'a> {
 struct ConstantAssignment<'a> {
     name: Ascii<'a>,
     expression: Expression<'a>,
-    pos: Span<'a>,
+    pos: AstSpan,
 }
 
 #[derive(Debug, PartialEq)]
 struct FunctionDefinition<'a> {
-    pos: Span<'a>,
+    pos: AstSpan,
     name: Ascii<'a>,
-    scope: Option<FunctionScope<'a>>,
+    scope: Option<FunctionScope>,
     args: Vec<FunctionArgument<'a>>,
     body: Vec<Statement<'a>>,
 }
 
 #[derive(Debug, PartialEq)]
 struct FunctionArgument<'a> {
-    pos: Span<'a>,
+    pos: AstSpan,
     name: Ascii<'a>,
     vartype: Vartype,
 }
@@ -109,12 +109,12 @@ enum Statement<'a> {
     VariableAssignment {
         name: Ascii<'a>,
         expression: Expression<'a>,
-        pos: Span<'a>,
+        pos: AstSpan,
     },
     FunctionCall {
-        pos: Span<'a>,
+        pos: AstSpan,
         name: Ascii<'a>,
-        scope: Option<FunctionScope<'a>>,
+        scope: Option<FunctionScope>,
         args: Box<Vec<Expression<'a>>>,
     },
 }
@@ -123,23 +123,23 @@ enum Statement<'a> {
 enum Expression<'a> {
     Parens {
         expression: Box<Expression<'a>>,
-        pos: Span<'a>,
+        pos: AstSpan,
     },
     FunctionCall {
-        pos: Span<'a>,
+        pos: AstSpan,
         name: Ascii<'a>,
-        scope: Option<FunctionScope<'a>>,
+        scope: Option<FunctionScope>,
         args: Box<Vec<Expression<'a>>>,
     },
     Literal {
-        pos: Span<'a>,
+        pos: AstSpan,
         value: Value<'a>,
     },
 }
 
 #[derive(Debug, PartialEq)]
-struct FunctionScope<'a> {
-    pos: Span<'a>,
+struct FunctionScope {
+    pos: AstSpan,
     token: AsciiChar,
 }
 
@@ -161,12 +161,13 @@ fn constant_assignment(s: Span) -> IResult<Span, ConstantAssignment> {
     let (s, name) = snakecase_upper(s)?;
     let (s, _) = delimited(space0, byte(b'='), space0)(s)?;
     let (s, expr) = expression(s)?;
+    let (s, end_pos) = position(s)?;
     return Ok((
         s,
         ConstantAssignment {
             name,
             expression: expr,
-            pos,
+            pos: pos.to(end_pos),
         },
     ));
 }
@@ -180,11 +181,16 @@ fn function_definition(s: Span) -> IResult<Span, FunctionDefinition> {
         separated_list(trim(byte(b',')), function_argument),
         byte(b')'),
     ))(s)?;
-    let (s, body) = delimited(byte(b'{'), many0(on_a_line(statement)), byte(b'}'))(s)?;
+    let (s, body) = required(delimited(
+        byte(b'{'),
+        many0(on_a_line(statement)),
+        byte(b'}'),
+    ))(s)?;
+    let (s, end_pos) = position(s)?;
     Ok((
         s,
         FunctionDefinition {
-            pos,
+            pos: pos.to(end_pos),
             name,
             scope,
             args,
@@ -196,10 +202,11 @@ fn function_definition(s: Span) -> IResult<Span, FunctionDefinition> {
 fn function_argument(s: Span) -> IResult<Span, FunctionArgument> {
     let (s, pos) = position(s)?;
     let (s, name) = snakecase_lower(s)?;
+    let (s, end_pos) = position(s)?;
     Ok((
         s,
         FunctionArgument {
-            pos,
+            pos: pos.to(end_pos),
             name,
             vartype: Vartype::Inferred,
         },
@@ -243,13 +250,14 @@ fn variable_assignment(s: Span) -> IResult<Span, Statement> {
     let (s, pos) = position(s)?;
     let (s, name) = snakecase_lower(s)?;
     let (s, _) = delimited(space0, byte(b'='), space0)(s)?;
-    let (s, expr) = expression(s)?;
+    let (s, expr) = required(expression)(s)?;
+    let (s, end_pos) = position(s)?;
     return Ok((
         s,
         Statement::VariableAssignment {
             name,
             expression: expr,
-            pos,
+            pos: pos.to(end_pos),
         },
     ));
 }
@@ -263,10 +271,11 @@ fn function_call(s: Span) -> IResult<Span, Expression> {
         separated_list(trim(byte(b',')), expression),
         byte(b')'),
     )(s)?;
+    let (s, end_pos) = position(s)?;
     Ok((
         s,
         Expression::FunctionCall {
-            pos,
+            pos: pos.to(end_pos),
             name,
             scope,
             args: Box::new(args),
@@ -278,18 +287,26 @@ fn function_scope(s: Span) -> IResult<Span, FunctionScope> {
     let (s, pos) = position(s)?;
     let (s, token) = alt((byte(b'!'), byte(b'?')))(s)?;
     let token = AsciiChar::try_from(token)
-        .or_else(|_| Err(nom::Err::Error(error_position!(s, ErrorKind::ParseTo))))?;
-    Ok((s, FunctionScope { pos, token }))
+        .or_else(|_| Err(nom::Err::Failure(error_position!(s, ErrorKind::ParseTo))))?;
+    let (s, end_pos) = position(s)?;
+    Ok((
+        s,
+        FunctionScope {
+            pos: pos.to(end_pos),
+            token,
+        },
+    ))
 }
 
 fn parens(s: Span) -> IResult<Span, Expression> {
     let (s, pos) = position(s)?;
     let (s, expr) = delimited(byte(b'('), expression, byte(b')'))(s)?;
+    let (s, end_pos) = position(s)?;
     Ok((
         s,
         Expression::Parens {
             expression: Box::from(expr),
-            pos,
+            pos: pos.to(end_pos),
         },
     ))
 }
@@ -297,7 +314,14 @@ fn parens(s: Span) -> IResult<Span, Expression> {
 fn literal(s: Span) -> IResult<Span, Expression> {
     let (s, pos) = position(s)?;
     let (s, value) = value(s)?;
-    Ok((s, Expression::Literal { pos, value }))
+    let (s, end_pos) = position(s)?;
+    Ok((
+        s,
+        Expression::Literal {
+            pos: pos.to(end_pos),
+            value,
+        },
+    ))
 }
 
 #[inline]
@@ -321,7 +345,7 @@ fn value_integer(s: Span) -> IResult<Span, Value> {
         .fragment
         .to_string()
         .parse()
-        .or_else(|_| Err(nom::Err::Error(error_position!(s, ErrorKind::Digit))))?;
+        .or_else(|_| Err(nom::Err::Failure(error_position!(s, ErrorKind::Digit))))?;
     Ok((s, Value::Integer(i)))
 }
 
@@ -331,7 +355,7 @@ fn value_decimal(s: Span) -> IResult<Span, Value> {
     let (s, d) = digit1(s)?;
     let i = format!("{}.{}", n.fragment, d.fragment)
         .parse()
-        .or_else(|_| Err(nom::Err::Error(error_position!(s, ErrorKind::Float))))?;
+        .or_else(|_| Err(nom::Err::Failure(error_position!(s, ErrorKind::Float))))?;
     Ok((s, Value::Decimal(i)))
 }
 
@@ -401,11 +425,25 @@ fn newline<'a>(input: Span<'a>) -> IResult<Span<'a>, u8> {
 }
 
 #[inline]
-fn eof<'a>(input: Span<'a>) -> IResult<Span<'a>, u8> {
+fn eof<'a, Error: ParseError<Span<'a>>>(input: Span<'a>) -> IResult<Span<'a>, u8, Error> {
     if input.input_len() == 0 {
         Ok((input, b'\0'))
     } else {
-        Err(nom::Err::Error(error_position!(input, ErrorKind::Eof)))
+        Err(nom::Err::Error(Error::from_char(
+            input,
+            char::from(input.fragment.bytes[0]),
+        )))
+    }
+}
+
+fn required<'a, O, F>(f: F) -> impl Fn(Span<'a>) -> IResult<Span<'a>, O>
+where
+    F: Fn(Span<'a>) -> IResult<Span<'a>, O>,
+{
+    move |input: Span| match f(input) {
+        Ok(io) => Ok(io),
+        Err(nom::Err::Error(e)) | Err(nom::Err::Failure(e)) => Err(nom::Err::Failure(e)),
+        Err(nom::Err::Incomplete(n)) => Err(nom::Err::Incomplete(n)),
     }
 }
 
@@ -414,12 +452,24 @@ fn eof<'a>(input: Span<'a>) -> IResult<Span<'a>, u8> {
 //    alt((byte(b' '), byte(b'\n')))(input)
 //}
 
-pub fn nani<'a>(input: Ascii<'a>) -> IResult<Span<'a>, Program<'a>> {
+pub fn nani<'a>(input: Ascii<'a>) -> Result<Program<'a>, String> {
+    match nani_structure(input) {
+        Ok((_, program)) => Ok(program),
+        Err(nom::Err::Failure((s, _))) => Err(format!(
+            "Unexpected token [L{} C{}]: {}",
+            s.line,
+            s.col,
+            char::from(s.fragment.bytes[0])
+        )),
+        _ => panic!("Unexpected end of parsing"),
+    }
+}
+pub fn nani_structure<'a>(input: Ascii<'a>) -> IResult<Span<'a>, Program<'a>> {
     let s = Span::new(input);
     let (s, constants) = many0(on_a_line(constant_assignment))(s)?;
     let (s, functions) = many0(on_a_line(function_definition))(s)?;
     let (s, _) = many0(alt((space, newline)))(s)?;
-    let (s, _) = eof(s)?;
+    let (s, _) = required(eof)(s)?;
     Ok((
         s,
         Program {
@@ -433,6 +483,17 @@ pub fn nani<'a>(input: Ascii<'a>) -> IResult<Span<'a>, Program<'a>> {
 mod tests {
     use crate::*;
 
+    fn expect_inline(offset: usize, line: usize, col: usize, length: usize) -> AstSpan {
+        AstSpan {
+            offset,
+            line,
+            col,
+            end_offset: offset + length,
+            end_line: line,
+            end_col: col + length,
+        }
+    }
+
     #[test]
     fn it_parses_a_constant_definition<'a>() {
         let (_, c) =
@@ -443,26 +504,16 @@ mod tests {
                 name: Ascii::from(&b"THIS_IS_CONSTANT"[..]),
                 expression: Expression::Literal {
                     value: Value::Integer(42),
-                    pos: Span {
-                        offset: 19,
-                        line: 1,
-                        col: 20,
-                        fragment: Ascii::from(&b""[..]),
-                    }
+                    pos: expect_inline(19, 1, 20, 2)
                 },
-                pos: Span {
-                    offset: 0,
-                    line: 1,
-                    col: 1,
-                    fragment: Ascii::from(&b""[..]),
-                }
+                pos: expect_inline(0, 1, 1, 21),
             }
         );
     }
 
     #[test]
     fn it_parses_constant_definitions() {
-        let (_, program) = nani(Ascii::from(
+        let program = nani(Ascii::from(
             &br#"
 THIS_IS_CONSTANT = 42
 THIS_ALSO_IS = 666
@@ -483,45 +534,27 @@ initialize() {
                         name: Ascii::from(&b"THIS_IS_CONSTANT"[..]),
                         expression: Expression::Literal {
                             value: Value::Integer(42),
-                            pos: Span {
-                                offset: 20,
-                                line: 2,
-                                col: 20,
-                                fragment: Ascii::from(&b""[..]),
-                            }
+                            pos: expect_inline(20, 2, 20, 2)
                         },
-                        pos: Span {
-                            offset: 1,
-                            line: 2,
-                            col: 1,
-                            fragment: Ascii::from(&b""[..]),
-                        }
+                        pos: expect_inline(1, 2, 1, 21)
                     },
                     ConstantAssignment {
                         name: Ascii::from(&b"THIS_ALSO_IS"[..]),
                         expression: Expression::Literal {
                             value: Value::Integer(666),
-                            pos: Span {
-                                offset: 38,
-                                line: 3,
-                                col: 16,
-                                fragment: Ascii::from(&b""[..]),
-                            }
+                            pos: expect_inline(38, 3, 16, 3)
                         },
-                        pos: Span {
-                            offset: 23,
-                            line: 3,
-                            col: 1,
-                            fragment: Ascii::from(&b""[..]),
-                        }
+                        pos: expect_inline(23, 3, 1, 18)
                     }
                 ],
                 functions: vec![FunctionDefinition {
-                    pos: Span {
+                    pos: AstSpan {
                         offset: 43,
                         line: 5,
                         col: 1,
-                        fragment: Ascii::from(&b""[..]),
+                        end_offset: 89,
+                        end_line: 9,
+                        end_col: 1,
                     },
                     name: Ascii::from(&b"initialize"[..]),
                     scope: None,
@@ -530,56 +563,26 @@ initialize() {
                         Statement::VariableAssignment {
                             name: Ascii::from(&b"x"[..]),
                             expression: Expression::Literal {
-                                pos: Span {
-                                    offset: 64,
-                                    line: 6,
-                                    col: 7,
-                                    fragment: Ascii::from(&b""[..]),
-                                },
+                                pos: expect_inline(64, 6, 7, 2),
                                 value: Value::Integer(20),
                             },
-                            pos: Span {
-                                offset: 60,
-                                line: 6,
-                                col: 3,
-                                fragment: Ascii::from(&b""[..]),
-                            },
+                            pos: expect_inline(60, 6, 3, 6),
                         },
                         Statement::VariableAssignment {
                             name: Ascii::from(&b"d"[..]),
                             expression: Expression::Literal {
-                                pos: Span {
-                                    offset: 73,
-                                    line: 7,
-                                    col: 7,
-                                    fragment: Ascii::from(&b""[..]),
-                                },
+                                pos: expect_inline(73, 7, 7, 3),
                                 value: Value::Decimal(2.5),
                             },
-                            pos: Span {
-                                offset: 69,
-                                line: 7,
-                                col: 3,
-                                fragment: Ascii::from(&b""[..]),
-                            },
+                            pos: expect_inline(69, 7, 3, 7),
                         },
                         Statement::VariableAssignment {
                             name: Ascii::from(&b"b"[..]),
                             expression: Expression::Literal {
-                                pos: Span {
-                                    offset: 83,
-                                    line: 8,
-                                    col: 7,
-                                    fragment: Ascii::from(&b""[..]),
-                                },
+                                pos: expect_inline(83, 8, 7, 4),
                                 value: Value::Bool(true),
                             },
-                            pos: Span {
-                                offset: 79,
-                                line: 8,
-                                col: 3,
-                                fragment: Ascii::from(&b""[..]),
-                            },
+                            pos: expect_inline(79, 8, 3, 8),
                         },
                     ],
                 }],
