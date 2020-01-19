@@ -3,15 +3,15 @@ extern crate nom;
 
 use crate::span::{position, AstSpan, Span};
 use nom::{
-    branch::{alt, permutation},
+    branch::alt,
     bytes::complete::{tag, take_while1},
     // see the "streaming/complete" paragraph lower for an explanation of these submodules
     character::complete::{digit1, space0},
     combinator::{opt, recognize},
     error::{ErrorKind, ParseError},
     lib::std::ops::RangeFrom,
-    multi::{many0, many1, separated_list, separated_nonempty_list},
-    sequence::{delimited, terminated},
+    multi::{many0, separated_list, separated_nonempty_list},
+    sequence::delimited,
     IResult,
     InputIter,
     InputLength,
