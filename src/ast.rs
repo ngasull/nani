@@ -71,6 +71,10 @@ enum Expression<'a> {
         scope: Option<FunctionScope>,
         args: Box<Vec<Expression<'a>>>,
     },
+    Variable {
+        pos: AstSpan,
+        name: Ascii<'a>,
+    },
     Literal {
         pos: AstSpan,
         value: Value<'a>,
@@ -181,11 +185,6 @@ fn function_call_statement(s: Span) -> IResult<Span, Statement> {
     }
 }
 
-#[inline]
-fn expression(s: Span) -> IResult<Span, Expression> {
-    alt((literal, parens))(s)
-}
-
 fn variable_assignment(s: Span) -> IResult<Span, Statement> {
     let (s, pos) = position(s)?;
     let (s, name) = snakecase_lower(s)?;
@@ -202,14 +201,20 @@ fn variable_assignment(s: Span) -> IResult<Span, Statement> {
     ));
 }
 
+#[inline]
+fn expression(s: Span) -> IResult<Span, Expression> {
+    // Order matters here, for instance function call must be checked before variable
+    alt((function_call, literal, variable, parens))(s)
+}
+
 fn function_call(s: Span) -> IResult<Span, Expression> {
     let (s, pos) = position(s)?;
     let (s, name) = snakecase_lower(s)?;
     let (s, scope) = opt(function_scope)(s)?;
     let (s, args) = delimited(
         byte(b'('),
-        separated_list(trim(byte(b',')), expression),
-        byte(b')'),
+        required(separated_list(trim(byte(b',')), expression)),
+        required(byte(b')')),
     )(s)?;
     let (s, end_pos) = position(s)?;
     Ok((
@@ -260,6 +265,19 @@ fn literal(s: Span) -> IResult<Span, Expression> {
         Expression::Literal {
             pos: pos.to(end_pos),
             value,
+        },
+    ))
+}
+
+fn variable(s: Span) -> IResult<Span, Expression> {
+    let (s, pos) = position(s)?;
+    let (s, name) = snakecase_lower(s)?;
+    let (s, end_pos) = position(s)?;
+    Ok((
+        s,
+        Expression::Variable {
+            pos: pos.to(end_pos),
+            name: Ascii::from(name),
         },
     ))
 }
@@ -482,6 +500,8 @@ initialize() {
   d = 2.5
   b = true
   s = "abc"
+  foo!()
+  r = bar(x, 42)
 }
         "#[..],
         )
@@ -512,8 +532,8 @@ initialize() {
                         offset: 43,
                         line: 5,
                         col: 1,
-                        end_offset: 101,
-                        end_line: 10,
+                        end_offset: 127,
+                        end_line: 12,
                         end_col: 1,
                     },
                     name: Ascii::from(&b"initialize"[..]),
@@ -551,6 +571,34 @@ initialize() {
                                 value: Value::String(Ascii::from(&b"abc"[..])),
                             },
                             pos: expect_inline(90, 9, 3, 9),
+                        },
+                        Statement::FunctionCall {
+                            name: Ascii::from(&b"foo"[..]),
+                            scope: Some(FunctionScope {
+                                token: AsciiChar::try_from(b'!').unwrap(),
+                                pos: expect_inline(105, 10, 6, 1),
+                            }),
+                            args: Box::new(vec![]),
+                            pos: expect_inline(102, 10, 3, 6),
+                        },
+                        Statement::VariableAssignment {
+                            name: Ascii::from(&b"r"[..]),
+                            expression: Expression::FunctionCall {
+                                pos: expect_inline(115, 11, 7, 10),
+                                name: Ascii::from(&b"bar"[..]),
+                                scope: None,
+                                args: Box::new(vec![
+                                    Expression::Variable {
+                                        pos: expect_inline(119, 11, 11, 1),
+                                        name: Ascii::from(&b"x"[..]),
+                                    },
+                                    Expression::Literal {
+                                        pos: expect_inline(122, 11, 14, 2),
+                                        value: Value::Integer(42),
+                                    }
+                                ]),
+                            },
+                            pos: expect_inline(111, 11, 3, 14),
                         },
                     ],
                 }],
