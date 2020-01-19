@@ -508,7 +508,7 @@ mod tests {
             col,
             end_offset: offset + length,
             end_line: line,
-            end_col: col + length,
+            end_col: col + length - 1,
         }
     }
 
@@ -516,7 +516,7 @@ mod tests {
     fn it_parses_a_constant_definition<'a>() {
         let (_, c) =
             constant_assignment(Span::new(Ascii::from(&b"THIS_IS_CONSTANT = 42"[..]))).unwrap();
-        let expected = assert_eq!(
+        assert_eq!(
             c,
             ConstantAssignment {
                 name: Ascii::from(&b"THIS_IS_CONSTANT"[..]),

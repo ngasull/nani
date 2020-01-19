@@ -9,7 +9,7 @@ use std::ops::{Range, RangeFrom, RangeFull, RangeTo};
 use std::slice::Iter;
 use std::str::FromStr;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AstSpan {
     pub offset: usize,
     pub line: usize,
@@ -17,12 +17,6 @@ pub struct AstSpan {
     pub end_offset: usize,
     pub end_line: usize,
     pub end_col: usize,
-}
-
-impl PartialEq for AstSpan {
-    fn eq(&self, other: &Self) -> bool {
-        self.offset == other.offset && self.end_offset == other.end_offset
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -50,7 +44,7 @@ impl<'a> Span<'a> {
             col: self.col,
             end_offset: end.offset,
             end_line: end.line,
-            end_col: end.col,
+            end_col: end.col - 1,
         }
     }
 }
