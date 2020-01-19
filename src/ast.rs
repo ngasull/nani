@@ -99,8 +99,8 @@ enum Vartype {
 fn constant_assignment(s: Span) -> IResult<Span, ConstantAssignment> {
     let (s, pos) = position(s)?;
     let (s, name) = snakecase_upper(s)?;
-    let (s, _) = delimited(space0, byte(b'='), space0)(s)?;
-    let (s, expr) = expression(s)?;
+    let (s, _) = required(delimited(space0, byte(b'='), space0))(s)?;
+    let (s, expr) = required(expression)(s)?;
     let (s, end_pos) = position(s)?;
     return Ok((
         s,
@@ -118,14 +118,14 @@ fn function_definition(s: Span) -> IResult<Span, FunctionDefinition> {
     let (s, scope) = opt(function_scope)(s)?;
     let (s, args) = trim(delimited(
         byte(b'('),
-        separated_list(trim(byte(b',')), function_argument),
+        required(separated_list(trim(byte(b',')), function_argument)),
         byte(b')'),
     ))(s)?;
-    let (s, body) = required(delimited(
-        byte(b'{'),
+    let (s, body) = delimited(
+        required(byte(b'{')),
         many0(on_a_line(statement)),
-        byte(b'}'),
-    ))(s)?;
+        finishes_multiline(required(byte(b'}'))),
+    )(s)?;
     let (s, end_pos) = position(s)?;
     Ok((
         s,
@@ -360,6 +360,17 @@ where
     }
 }
 
+fn finishes_multiline<'a, O, F>(f: F) -> impl Fn(Span<'a>) -> IResult<Span<'a>, O>
+where
+    F: Fn(Span<'a>) -> IResult<Span<'a>, O>,
+{
+    move |input: Span| {
+        let (input, _) = many0(alt((space, newline)))(input)?;
+        let (input, o) = f(input)?;
+        Ok((input, o))
+    }
+}
+
 #[inline]
 fn space<'a>(input: Span<'a>) -> IResult<Span<'a>, u8> {
     byte(b' ')(input)
@@ -430,6 +441,7 @@ pub fn parse_nani<'a>(input: &'a [u8]) -> Result<Program<'a>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pretty_assertions::assert_eq;
 
     fn expect_inline(offset: usize, line: usize, col: usize, length: usize) -> AstSpan {
         AstSpan {
@@ -459,7 +471,7 @@ mod tests {
     }
 
     #[test]
-    fn it_parses_constant_definitions() {
+    fn it_parses_a_sample_short_program() {
         let program = parse_nani(
             &br#"
 THIS_IS_CONSTANT = 42
