@@ -5,13 +5,13 @@ use crate::{
 use nom::{
     branch::alt,
     bytes::complete::{escaped, is_not, tag, take_while1},
-    character::complete::{digit1, space0},
+    character::complete::{digit1, space0, space1},
     combinator::{opt, recognize},
     error::{ErrorKind, ParseError},
     lib::std::ops::RangeFrom,
     multi::{many0, separated_list, separated_nonempty_list},
     sequence::delimited,
-    IResult, InputIter, InputLength, Slice,
+    AsBytes, IResult, InputIter, InputLength, Slice,
 };
 use std::convert::TryFrom;
 
@@ -57,6 +57,11 @@ enum Statement<'a> {
         scope: Option<FunctionScope>,
         args: Box<Vec<Expression<'a>>>,
     },
+    If {
+        pos: AstSpan,
+        condition: Expression<'a>,
+        body: Box<Vec<Statement<'a>>>,
+    },
 }
 
 #[derive(Debug, PartialEq)]
@@ -70,6 +75,10 @@ enum Expression<'a> {
         name: Ascii<'a>,
         scope: Option<FunctionScope>,
         args: Box<Vec<Expression<'a>>>,
+    },
+    Constant {
+        pos: AstSpan,
+        name: Ascii<'a>,
     },
     Variable {
         pos: AstSpan,
@@ -100,9 +109,29 @@ enum Vartype {
     Inferred,
 }
 
+static KEYWORD_IF: &[u8] = b"if";
+static KEYWORD_FOR: &[u8] = b"for";
+static KEYWORD_WHILE: &[u8] = b"while";
+static KEYWORD_TRUE: &[u8] = b"true";
+static KEYWORD_FALSE: &[u8] = b"false";
+static KEYWORD_RETURN: &[u8] = b"return";
+static KEYWORD_BREAK: &[u8] = b"break";
+static KEYWORD_CONTINUE: &[u8] = b"continue";
+
+static RESERVED_KEYWORDS: &[&[u8]] = &[
+    KEYWORD_IF,
+    KEYWORD_FOR,
+    KEYWORD_WHILE,
+    KEYWORD_TRUE,
+    KEYWORD_FALSE,
+    KEYWORD_RETURN,
+    KEYWORD_BREAK,
+    KEYWORD_CONTINUE,
+];
+
 fn constant_assignment(s: Span) -> IResult<Span, ConstantAssignment> {
     let (s, pos) = position(s)?;
-    let (s, name) = snakecase_upper(s)?;
+    let (s, name) = not_reserved(snakecase_upper)(s)?;
     let (s, _) = required(delimited(space0, byte(b'='), space0))(s)?;
     let (s, expr) = required(expression)(s)?;
     let (s, end_pos) = position(s)?;
@@ -118,7 +147,7 @@ fn constant_assignment(s: Span) -> IResult<Span, ConstantAssignment> {
 
 fn function_definition(s: Span) -> IResult<Span, FunctionDefinition> {
     let (s, pos) = position(s)?;
-    let (s, name) = snakecase_lower(s)?;
+    let (s, name) = not_reserved(snakecase_lower)(s)?;
     let (s, scope) = opt(function_scope)(s)?;
     let (s, args) = trim(delimited(
         byte(b'('),
@@ -145,7 +174,7 @@ fn function_definition(s: Span) -> IResult<Span, FunctionDefinition> {
 
 fn function_argument(s: Span) -> IResult<Span, FunctionArgument> {
     let (s, pos) = position(s)?;
-    let (s, name) = snakecase_lower(s)?;
+    let (s, name) = not_reserved(snakecase_lower)(s)?;
     let (s, end_pos) = position(s)?;
     Ok((
         s,
@@ -159,7 +188,7 @@ fn function_argument(s: Span) -> IResult<Span, FunctionArgument> {
 
 #[inline]
 fn statement(s: Span) -> IResult<Span, Statement> {
-    alt((variable_assignment, function_call_statement))(s)
+    alt((variable_assignment, if_statement, function_call_statement))(s)
 }
 
 fn function_call_statement(s: Span) -> IResult<Span, Statement> {
@@ -187,7 +216,7 @@ fn function_call_statement(s: Span) -> IResult<Span, Statement> {
 
 fn variable_assignment(s: Span) -> IResult<Span, Statement> {
     let (s, pos) = position(s)?;
-    let (s, name) = snakecase_lower(s)?;
+    let (s, name) = not_reserved(snakecase_lower)(s)?;
     let (s, _) = delimited(space0, byte(b'='), space0)(s)?;
     let (s, expr) = required(expression)(s)?;
     let (s, end_pos) = position(s)?;
@@ -201,10 +230,30 @@ fn variable_assignment(s: Span) -> IResult<Span, Statement> {
     ));
 }
 
+fn if_statement(s: Span) -> IResult<Span, Statement> {
+    let (s, pos) = position(s)?;
+    let (s, _) = tag(KEYWORD_IF)(s)?;
+    let (s, expr) = delimited(space1, required(expression), space0)(s)?;
+    let (s, body) = delimited(
+        required(byte(b'{')),
+        many0(on_a_line(statement)),
+        finishes_multiline(required(byte(b'}'))),
+    )(s)?;
+    let (s, end_pos) = position(s)?;
+    return Ok((
+        s,
+        Statement::If {
+            pos: pos.to(end_pos),
+            condition: expr,
+            body: Box::new(body),
+        },
+    ));
+}
+
 #[inline]
 fn expression(s: Span) -> IResult<Span, Expression> {
     // Order matters here, for instance function call must be checked before variable
-    alt((function_call, literal, variable, parens))(s)
+    alt((function_call, literal, constant, variable, parens))(s)
 }
 
 fn function_call(s: Span) -> IResult<Span, Expression> {
@@ -269,9 +318,22 @@ fn literal(s: Span) -> IResult<Span, Expression> {
     ))
 }
 
+fn constant(s: Span) -> IResult<Span, Expression> {
+    let (s, pos) = position(s)?;
+    let (s, name) = not_reserved(snakecase_upper)(s)?;
+    let (s, end_pos) = position(s)?;
+    Ok((
+        s,
+        Expression::Constant {
+            pos: pos.to(end_pos),
+            name: Ascii::from(name),
+        },
+    ))
+}
+
 fn variable(s: Span) -> IResult<Span, Expression> {
     let (s, pos) = position(s)?;
-    let (s, name) = snakecase_lower(s)?;
+    let (s, name) = not_reserved(snakecase_lower)(s)?;
     let (s, end_pos) = position(s)?;
     Ok((
         s,
@@ -288,10 +350,10 @@ fn value(s: Span) -> IResult<Span, Value> {
 }
 
 fn value_bool(s: Span) -> IResult<Span, Value> {
-    let (s, value) = if let (s, Some(_)) = opt(tag(&b"true"[..]))(s)? {
+    let (s, value) = if let (s, Some(_)) = opt(tag(KEYWORD_TRUE))(s)? {
         (s, true)
     } else {
-        let (s, _) = tag(&b"false"[..])(s)?;
+        let (s, _) = tag(KEYWORD_FALSE)(s)?;
         (s, false)
     };
     Ok((s, Value::Bool(value)))
@@ -419,6 +481,21 @@ where
         Ok(io) => Ok(io),
         Err(nom::Err::Error(e)) | Err(nom::Err::Failure(e)) => Err(nom::Err::Failure(e)),
         Err(nom::Err::Incomplete(n)) => Err(nom::Err::Incomplete(n)),
+    }
+}
+
+fn not_reserved<'a, O, F>(f: F) -> impl Fn(Span<'a>) -> IResult<Span<'a>, O>
+where
+    F: Fn(Span<'a>) -> IResult<Span<'a>, O>,
+    O: AsBytes,
+{
+    move |input: Span| {
+        let (new_input, res) = f(input)?;
+        if RESERVED_KEYWORDS.iter().any(|&k| k == res.as_bytes()) {
+            Err(nom::Err::Failure(error_position!(input, ErrorKind::Tag)))
+        } else {
+            Ok((new_input, res))
+        }
     }
 }
 
