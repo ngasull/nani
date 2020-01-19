@@ -1,4 +1,4 @@
-use crate::Ascii;
+use crate::ascii::Ascii;
 use nom::{
     error::{ErrorKind, ParseError},
     AsBytes, Compare, CompareResult, Err, FindSubstring, IResult, InputIter, InputLength,
