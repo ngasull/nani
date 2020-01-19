@@ -4,7 +4,7 @@ extern crate nom;
 use crate::span::{position, AstSpan, Span};
 use nom::{
     branch::alt,
-    bytes::complete::{tag, take_while1},
+    bytes::complete::{escaped, is_not, tag, take_while1},
     // see the "streaming/complete" paragraph lower for an explanation of these submodules
     character::complete::{digit1, space0},
     combinator::{opt, recognize},
@@ -67,7 +67,7 @@ impl TryFrom<u8> for AsciiChar {
     type Error = &'static str;
 
     fn try_from(byte: u8) -> Result<Self, Self::Error> {
-        if byte < 0xF0 {
+        if is_ascii(byte) {
             Ok(AsciiChar { byte })
         } else {
             Err("Given byte is not ASCII")
@@ -326,7 +326,7 @@ fn literal(s: Span) -> IResult<Span, Expression> {
 
 #[inline]
 fn value(s: Span) -> IResult<Span, Value> {
-    alt((value_bool, value_decimal, value_integer))(s)
+    alt((value_bool, value_decimal, value_integer, value_string))(s)
 }
 
 fn value_bool(s: Span) -> IResult<Span, Value> {
@@ -359,6 +359,19 @@ fn value_decimal(s: Span) -> IResult<Span, Value> {
     Ok((s, Value::Decimal(i)))
 }
 
+fn value_string(s: Span) -> IResult<Span, Value> {
+    let (s, str_literal) = delimited(
+        byte(b'"'),
+        escaped(is_not("\"\\"), '\\', alt((byte(b'"'), byte(b'\\')))),
+        byte(b'"'),
+    )(s)?;
+    if str_literal.fragment.bytes.iter().all(|&c| is_ascii(c)) {
+        Ok((s, Value::String(str_literal.fragment)))
+    } else {
+        Err(nom::Err::Failure(error_position!(s, ErrorKind::Verify)))
+    }
+}
+
 fn snakecase_upper(s: Span) -> IResult<Span, Ascii> {
     let (s, n) = recognize(separated_nonempty_list(byte(b'_'), take_while1(is_upper)))(s)?;
     Ok((s, n.fragment))
@@ -377,6 +390,11 @@ fn is_upper(chr: u8) -> bool {
 #[inline]
 fn is_lower(chr: u8) -> bool {
     chr >= 0x61 && chr <= 0x7A
+}
+
+#[inline]
+fn is_ascii(chr: u8) -> bool {
+    chr < 0x80
 }
 
 fn byte<I, Error: ParseError<I>>(b: u8) -> impl Fn(I) -> IResult<I, u8, Error>
@@ -522,6 +540,7 @@ initialize() {
   x = 20
   d = 2.5
   b = true
+  s = "abc"
 }
         "#[..],
         ))
@@ -552,8 +571,8 @@ initialize() {
                         offset: 43,
                         line: 5,
                         col: 1,
-                        end_offset: 89,
-                        end_line: 9,
+                        end_offset: 101,
+                        end_line: 10,
                         end_col: 1,
                     },
                     name: Ascii::from(&b"initialize"[..]),
@@ -583,6 +602,14 @@ initialize() {
                                 value: Value::Bool(true),
                             },
                             pos: expect_inline(79, 8, 3, 8),
+                        },
+                        Statement::VariableAssignment {
+                            name: Ascii::from(&b"s"[..]),
+                            expression: Expression::Literal {
+                                pos: expect_inline(94, 9, 7, 5),
+                                value: Value::String(Ascii::from(&b"abc"[..])),
+                            },
+                            pos: expect_inline(90, 9, 3, 9),
                         },
                     ],
                 }],
