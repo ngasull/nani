@@ -6,11 +6,11 @@ use nom::{
     branch::alt,
     bytes::complete::{escaped, is_not, tag, take_while1},
     character::complete::{digit1, space0, space1},
-    combinator::{opt, recognize},
+    combinator::{cut as required, opt, recognize},
     error::{ErrorKind, ParseError},
     lib::std::ops::RangeFrom,
     multi::{many0, separated_list, separated_nonempty_list},
-    sequence::delimited,
+    sequence::{delimited, tuple},
     AsBytes, IResult, InputIter, InputLength, Slice,
 };
 use std::convert::TryFrom;
@@ -62,19 +62,29 @@ enum Statement<'a> {
         condition: Expression<'a>,
         body: Box<Vec<Statement<'a>>>,
     },
+    While {
+        pos: AstSpan,
+        condition: Expression<'a>,
+        body: Box<Vec<Statement<'a>>>,
+    },
 }
 
 #[derive(Debug, PartialEq)]
 enum Expression<'a> {
     Parens {
-        expression: Box<Expression<'a>>,
         pos: AstSpan,
+        expression: Box<Expression<'a>>,
     },
     FunctionCall {
         pos: AstSpan,
         name: Ascii<'a>,
         scope: Option<FunctionScope>,
         args: Box<Vec<Expression<'a>>>,
+    },
+    BinaryOperation {
+        operator: BinaryOperator,
+        left: Box<Expression<'a>>,
+        right: Box<Expression<'a>>,
     },
     Constant {
         pos: AstSpan,
@@ -88,6 +98,37 @@ enum Expression<'a> {
         pos: AstSpan,
         value: Value<'a>,
     },
+}
+
+impl<'a> Expression<'a> {
+    pub fn get_pos(&self) -> AstSpan {
+        match self {
+            &Expression::Parens { pos, .. } => pos,
+            &Expression::FunctionCall { pos, .. } => pos,
+            &Expression::Constant { pos, .. } => pos,
+            &Expression::Variable { pos, .. } => pos,
+            &Expression::Literal { pos, .. } => pos,
+            Expression::BinaryOperation { left, right, .. } => {
+                let AstSpan {
+                    offset, line, col, ..
+                } = left.get_pos();
+                let AstSpan {
+                    offset: end_offset,
+                    line: end_line,
+                    col: end_col,
+                    ..
+                } = right.get_pos();
+                AstSpan {
+                    offset,
+                    line,
+                    col,
+                    end_offset,
+                    end_line,
+                    end_col,
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -109,16 +150,99 @@ enum Vartype {
     Inferred,
 }
 
-static KEYWORD_IF: &[u8] = b"if";
-static KEYWORD_FOR: &[u8] = b"for";
-static KEYWORD_WHILE: &[u8] = b"while";
-static KEYWORD_TRUE: &[u8] = b"true";
-static KEYWORD_FALSE: &[u8] = b"false";
-static KEYWORD_RETURN: &[u8] = b"return";
-static KEYWORD_BREAK: &[u8] = b"break";
-static KEYWORD_CONTINUE: &[u8] = b"continue";
+#[derive(Debug, PartialEq, Copy, Clone)]
+enum BinaryOperator {
+    And,
+    Or,
+    Eq,
+    Ne,
+    Ge,
+    Gt,
+    Le,
+    Lt,
+    Plus,
+    Minus,
+    Multiply,
+    Divide,
+    Modulo,
+    BitShiftLeft,
+    BitShiftRight,
+    BitAnd,
+    BitOr,
+}
 
-static RESERVED_KEYWORDS: &[&[u8]] = &[
+impl From<BinaryOperator> for &[u8] {
+    fn from(operator: BinaryOperator) -> &'static [u8] {
+        match operator {
+            BinaryOperator::And => TOKEN_AND,
+            BinaryOperator::Or => TOKEN_OR,
+            BinaryOperator::Eq => TOKEN_EQ,
+            BinaryOperator::Ne => TOKEN_NE,
+            BinaryOperator::Ge => TOKEN_GE,
+            BinaryOperator::Gt => TOKEN_GT,
+            BinaryOperator::Le => TOKEN_LE,
+            BinaryOperator::Lt => TOKEN_LT,
+            BinaryOperator::Plus => TOKEN_PLUS,
+            BinaryOperator::Minus => TOKEN_MINUS,
+            BinaryOperator::Multiply => TOKEN_MULTIPLY,
+            BinaryOperator::Divide => TOKEN_DIVIDE,
+            BinaryOperator::Modulo => TOKEN_MODULO,
+            BinaryOperator::BitShiftLeft => TOKEN_BIT_SHIFT_LEFT,
+            BinaryOperator::BitShiftRight => TOKEN_BIT_SHIFT_RIGHT,
+            BinaryOperator::BitAnd => TOKEN_BIT_AND,
+            BinaryOperator::BitOr => TOKEN_BIT_OR,
+        }
+    }
+}
+
+const TOKEN_AND: &[u8] = b"&&";
+const TOKEN_OR: &[u8] = b"||";
+const TOKEN_EQ: &[u8] = b"==";
+const TOKEN_NE: &[u8] = b"!=";
+const TOKEN_GE: &[u8] = b">=";
+const TOKEN_GT: &[u8] = b">";
+const TOKEN_LE: &[u8] = b"<=";
+const TOKEN_LT: &[u8] = b"<";
+const TOKEN_PLUS: &[u8] = b"+";
+const TOKEN_MINUS: &[u8] = b"-";
+const TOKEN_MULTIPLY: &[u8] = b"*";
+const TOKEN_DIVIDE: &[u8] = b"/";
+const TOKEN_MODULO: &[u8] = b"%";
+const TOKEN_BIT_SHIFT_LEFT: &[u8] = b"<<";
+const TOKEN_BIT_SHIFT_RIGHT: &[u8] = b">>";
+const TOKEN_BIT_AND: &[u8] = b"&";
+const TOKEN_BIT_OR: &[u8] = b"|";
+
+const BIN_OPS_WITH_BY_PRECEDENCE: &[BinaryOperator] = &[
+    BinaryOperator::Or,
+    BinaryOperator::And,
+    BinaryOperator::Eq,
+    BinaryOperator::Ne,
+    BinaryOperator::Ge,
+    BinaryOperator::Gt,
+    BinaryOperator::Le,
+    BinaryOperator::Lt,
+    BinaryOperator::BitOr,
+    BinaryOperator::BitAnd,
+    BinaryOperator::BitShiftLeft,
+    BinaryOperator::BitShiftRight,
+    BinaryOperator::Plus,
+    BinaryOperator::Minus,
+    BinaryOperator::Divide,
+    BinaryOperator::Multiply,
+    BinaryOperator::Modulo,
+];
+
+const KEYWORD_IF: &[u8] = b"if";
+const KEYWORD_FOR: &[u8] = b"for";
+const KEYWORD_WHILE: &[u8] = b"while";
+const KEYWORD_TRUE: &[u8] = b"true";
+const KEYWORD_FALSE: &[u8] = b"false";
+const KEYWORD_RETURN: &[u8] = b"return";
+const KEYWORD_BREAK: &[u8] = b"break";
+const KEYWORD_CONTINUE: &[u8] = b"continue";
+
+const RESERVED_KEYWORDS: &[&[u8]] = &[
     KEYWORD_IF,
     KEYWORD_FOR,
     KEYWORD_WHILE,
@@ -188,7 +312,12 @@ fn function_argument(s: Span) -> IResult<Span, FunctionArgument> {
 
 #[inline]
 fn statement(s: Span) -> IResult<Span, Statement> {
-    alt((variable_assignment, if_statement, function_call_statement))(s)
+    alt((
+        variable_assignment,
+        if_statement,
+        while_statement,
+        function_call_statement,
+    ))(s)
 }
 
 fn function_call_statement(s: Span) -> IResult<Span, Statement> {
@@ -250,10 +379,94 @@ fn if_statement(s: Span) -> IResult<Span, Statement> {
     ));
 }
 
-#[inline]
+fn while_statement(s: Span) -> IResult<Span, Statement> {
+    let (s, pos) = position(s)?;
+    let (s, _) = tag(KEYWORD_WHILE)(s)?;
+    let (s, expr) = delimited(space1, required(expression), space0)(s)?;
+    let (s, body) = delimited(
+        required(byte(b'{')),
+        many0(on_a_line(statement)),
+        finishes_multiline(required(byte(b'}'))),
+    )(s)?;
+    let (s, end_pos) = position(s)?;
+    return Ok((
+        s,
+        Statement::While {
+            pos: pos.to(end_pos),
+            condition: expr,
+            body: Box::new(body),
+        },
+    ));
+}
+
 fn expression(s: Span) -> IResult<Span, Expression> {
-    // Order matters here, for instance function call must be checked before variable
-    alt((function_call, literal, constant, variable, parens))(s)
+    let (s, expr) = expression_raw(s)?;
+    let (s, ops) = many0(binary_operation_right)(s)?;
+    Ok((s, binary_operations_aggregate(expr, ops)))
+}
+
+fn binary_operations_aggregate<'a>(
+    left: Expression<'a>,
+    mut ops: Vec<(BinaryOperator, Expression<'a>)>,
+) -> Expression<'a> {
+    if ops.len() == 0 {
+        left
+    } else if ops.len() == 1 {
+        let (operator, right) = ops.pop().unwrap();
+        Expression::BinaryOperation {
+            operator,
+            left: Box::new(left),
+            right: Box::new(right),
+        }
+    } else {
+        let i = BIN_OPS_WITH_BY_PRECEDENCE
+            .iter()
+            .find_map(|&candidate_operator| {
+                ops.iter().enumerate().find_map(|(i, &(operator, _))| {
+                    if operator == candidate_operator {
+                        Some(i)
+                    } else {
+                        None
+                    }
+                })
+            })
+            .expect("An operator has been parsed but then not recognized");
+
+        let right_ops = ops.split_off(i + 1);
+        let (operator, right) = ops.pop().unwrap();
+        Expression::BinaryOperation {
+            operator,
+            left: Box::new(binary_operations_aggregate(left, ops)),
+            right: Box::new(binary_operations_aggregate(right, right_ops)),
+        }
+    }
+}
+
+#[inline]
+fn expression_raw(s: Span) -> IResult<Span, Expression> {
+    // Order matters here, for instance:
+    // literal > function_call > variable
+    // Also matters for performance: some matchers are more expensive than others
+    alt((parens, constant, literal, function_call, variable))(s)
+}
+
+#[inline]
+fn binary_operation_right(s: Span) -> IResult<Span, (BinaryOperator, Expression)> {
+    tuple((
+        delimited(space0, binary_operator, space0),
+        required(expression_raw),
+    ))(s)
+}
+
+fn binary_operator(s: Span) -> IResult<Span, BinaryOperator> {
+    BIN_OPS_WITH_BY_PRECEDENCE
+        .iter()
+        .find_map(|&op| {
+            tag::<&[u8], Span, (Span, ErrorKind)>(op.into())(s)
+                .ok()
+                .map(|(s, _)| Ok((s, op)))
+        })
+        .unwrap_or_else(|| Err(nom::Err::Error(error_position!(s, ErrorKind::Char))))
 }
 
 fn function_call(s: Span) -> IResult<Span, Expression> {
@@ -281,7 +494,7 @@ fn function_scope(s: Span) -> IResult<Span, FunctionScope> {
     let (s, pos) = position(s)?;
     let (s, token) = alt((byte(b'!'), byte(b'?')))(s)?;
     let token = AsciiChar::try_from(token)
-        .or_else(|_| Err(nom::Err::Failure(error_position!(s, ErrorKind::ParseTo))))?;
+        .map_err(|_| nom::Err::Failure(error_position!(s, ErrorKind::ParseTo)))?;
     let (s, end_pos) = position(s)?;
     Ok((
         s,
@@ -364,7 +577,7 @@ fn value_integer(s: Span) -> IResult<Span, Value> {
     let i = Ascii::from(i.fragment)
         .to_string()
         .parse()
-        .or_else(|_| Err(nom::Err::Failure(error_position!(s, ErrorKind::Digit))))?;
+        .map_err(|_| nom::Err::Failure(error_position!(s, ErrorKind::Digit)))?;
     Ok((s, Value::Integer(i)))
 }
 
@@ -374,7 +587,7 @@ fn value_decimal(s: Span) -> IResult<Span, Value> {
     let (s, d) = digit1(s)?;
     let i = format!("{}.{}", Ascii::from(n.fragment), Ascii::from(d.fragment))
         .parse()
-        .or_else(|_| Err(nom::Err::Failure(error_position!(s, ErrorKind::Float))))?;
+        .map_err(|_| nom::Err::Failure(error_position!(s, ErrorKind::Float)))?;
     Ok((s, Value::Decimal(i)))
 }
 
@@ -473,17 +686,6 @@ fn eof<'a, Error: ParseError<Span<'a>>>(input: Span<'a>) -> IResult<Span<'a>, u8
     }
 }
 
-fn required<'a, O, F>(f: F) -> impl Fn(Span<'a>) -> IResult<Span<'a>, O>
-where
-    F: Fn(Span<'a>) -> IResult<Span<'a>, O>,
-{
-    move |input: Span| match f(input) {
-        Ok(io) => Ok(io),
-        Err(nom::Err::Error(e)) | Err(nom::Err::Failure(e)) => Err(nom::Err::Failure(e)),
-        Err(nom::Err::Incomplete(n)) => Err(nom::Err::Incomplete(n)),
-    }
-}
-
 fn not_reserved<'a, O, F>(f: F) -> impl Fn(Span<'a>) -> IResult<Span<'a>, O>
 where
     F: Fn(Span<'a>) -> IResult<Span<'a>, O>,
@@ -547,6 +749,71 @@ mod tests {
             end_line: line,
             end_col: col + length - 1,
         }
+    }
+
+    #[test]
+    fn it_parses_a_while_statement<'a>() {
+        let (_, s) =
+            while_statement(Span::new(&b"while x < 42 {\n  draw_particle!(x)\n}"[..])).unwrap();
+        assert_eq!(
+            s,
+            Statement::While {
+                pos: AstSpan {
+                    end_line: 3,
+                    end_col: 1,
+                    ..expect_inline(0, 1, 1, 36)
+                },
+                condition: Expression::BinaryOperation {
+                    operator: BinaryOperator::Lt,
+                    left: Box::new(Expression::Variable {
+                        pos: expect_inline(6, 1, 7, 1),
+                        name: Ascii::from(&b"x"[..]),
+                    }),
+                    right: Box::new(Expression::Literal {
+                        pos: expect_inline(10, 1, 11, 2),
+                        value: Value::Integer(42),
+                    }),
+                },
+                body: Box::new(vec![Statement::FunctionCall {
+                    pos: expect_inline(17, 2, 3, 17),
+                    name: Ascii::from(&b"draw_particle"[..]),
+                    scope: Some(FunctionScope {
+                        token: AsciiChar::try_from(b'!').unwrap(),
+                        pos: expect_inline(30, 2, 16, 1),
+                    }),
+                    args: Box::new(vec![Expression::Variable {
+                        pos: expect_inline(32, 2, 18, 1),
+                        name: Ascii::from(&b"x"[..]),
+                    }]),
+                }]),
+            }
+        );
+    }
+
+    #[test]
+    fn it_treats_precedence_correctly<'a>() {
+        let (_, c) = expression(Span::new(&b"a && b || c"[..])).unwrap();
+        assert_eq!(
+            c,
+            Expression::BinaryOperation {
+                operator: BinaryOperator::Or,
+                left: Box::new(Expression::BinaryOperation {
+                    operator: BinaryOperator::And,
+                    left: Box::new(Expression::Variable {
+                        pos: expect_inline(0, 1, 1, 1),
+                        name: Ascii::from(&b"a"[..]),
+                    }),
+                    right: Box::new(Expression::Variable {
+                        pos: expect_inline(5, 1, 6, 1),
+                        name: Ascii::from(&b"b"[..]),
+                    }),
+                }),
+                right: Box::new(Expression::Variable {
+                    pos: expect_inline(10, 1, 11, 1),
+                    name: Ascii::from(&b"c"[..]),
+                }),
+            },
+        );
     }
 
     #[test]
