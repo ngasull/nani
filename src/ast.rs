@@ -8,10 +8,9 @@ use nom::{
     character::complete::{digit1, space0, space1},
     combinator::{cut as required, opt, recognize},
     error::{ErrorKind, ParseError},
-    lib::std::ops::RangeFrom,
     multi::{many0, separated_list, separated_nonempty_list},
     sequence::{delimited, tuple},
-    AsBytes, IResult, InputIter, InputLength, Slice,
+    AsBytes, InputIter, InputLength, Slice,
 };
 use std::convert::TryFrom;
 
@@ -253,7 +252,7 @@ const RESERVED_KEYWORDS: &[&[u8]] = &[
     KEYWORD_CONTINUE,
 ];
 
-fn constant_assignment(s: Span) -> IResult<Span, ConstantAssignment> {
+fn constant_assignment(s: Span) -> IResult<ConstantAssignment> {
     let (s, pos) = position(s)?;
     let (s, name) = not_reserved(snakecase_upper)(s)?;
     let (s, _) = required(delimited(space0, byte(b'='), space0))(s)?;
@@ -269,7 +268,7 @@ fn constant_assignment(s: Span) -> IResult<Span, ConstantAssignment> {
     ));
 }
 
-fn function_definition(s: Span) -> IResult<Span, FunctionDefinition> {
+fn function_definition(s: Span) -> IResult<FunctionDefinition> {
     let (s, pos) = position(s)?;
     let (s, name) = not_reserved(snakecase_lower)(s)?;
     let (s, scope) = opt(function_scope)(s)?;
@@ -296,7 +295,7 @@ fn function_definition(s: Span) -> IResult<Span, FunctionDefinition> {
     ))
 }
 
-fn function_argument(s: Span) -> IResult<Span, FunctionArgument> {
+fn function_argument(s: Span) -> IResult<FunctionArgument> {
     let (s, pos) = position(s)?;
     let (s, name) = not_reserved(snakecase_lower)(s)?;
     let (s, end_pos) = position(s)?;
@@ -311,7 +310,7 @@ fn function_argument(s: Span) -> IResult<Span, FunctionArgument> {
 }
 
 #[inline]
-fn statement(s: Span) -> IResult<Span, Statement> {
+fn statement(s: Span) -> IResult<Statement> {
     alt((
         variable_assignment,
         if_statement,
@@ -320,7 +319,7 @@ fn statement(s: Span) -> IResult<Span, Statement> {
     ))(s)
 }
 
-fn function_call_statement(s: Span) -> IResult<Span, Statement> {
+fn function_call_statement(s: Span) -> IResult<Statement> {
     let (s, fncall) = function_call(s)?;
     if let Expression::FunctionCall {
         pos,
@@ -343,7 +342,7 @@ fn function_call_statement(s: Span) -> IResult<Span, Statement> {
     }
 }
 
-fn variable_assignment(s: Span) -> IResult<Span, Statement> {
+fn variable_assignment(s: Span) -> IResult<Statement> {
     let (s, pos) = position(s)?;
     let (s, name) = not_reserved(snakecase_lower)(s)?;
     let (s, _) = delimited(space0, byte(b'='), space0)(s)?;
@@ -359,7 +358,7 @@ fn variable_assignment(s: Span) -> IResult<Span, Statement> {
     ));
 }
 
-fn if_statement(s: Span) -> IResult<Span, Statement> {
+fn if_statement(s: Span) -> IResult<Statement> {
     let (s, pos) = position(s)?;
     let (s, _) = tag(KEYWORD_IF)(s)?;
     let (s, expr) = delimited(space1, required(expression), space0)(s)?;
@@ -379,7 +378,7 @@ fn if_statement(s: Span) -> IResult<Span, Statement> {
     ));
 }
 
-fn while_statement(s: Span) -> IResult<Span, Statement> {
+fn while_statement(s: Span) -> IResult<Statement> {
     let (s, pos) = position(s)?;
     let (s, _) = tag(KEYWORD_WHILE)(s)?;
     let (s, expr) = delimited(space1, required(expression), space0)(s)?;
@@ -399,7 +398,7 @@ fn while_statement(s: Span) -> IResult<Span, Statement> {
     ));
 }
 
-fn expression(s: Span) -> IResult<Span, Expression> {
+fn expression(s: Span) -> IResult<Expression> {
     let (s, expr) = expression_raw(s)?;
     let (s, ops) = many0(binary_operation_right)(s)?;
     Ok((s, binary_operations_aggregate(expr, ops)))
@@ -443,7 +442,7 @@ fn binary_operations_aggregate<'a>(
 }
 
 #[inline]
-fn expression_raw(s: Span) -> IResult<Span, Expression> {
+fn expression_raw(s: Span) -> IResult<Expression> {
     // Order matters here, for instance:
     // literal > function_call > variable
     // Also matters for performance: some matchers are more expensive than others
@@ -451,14 +450,14 @@ fn expression_raw(s: Span) -> IResult<Span, Expression> {
 }
 
 #[inline]
-fn binary_operation_right(s: Span) -> IResult<Span, (BinaryOperator, Expression)> {
+fn binary_operation_right(s: Span) -> IResult<(BinaryOperator, Expression)> {
     tuple((
         delimited(space0, binary_operator, space0),
         required(expression_raw),
     ))(s)
 }
 
-fn binary_operator(s: Span) -> IResult<Span, BinaryOperator> {
+fn binary_operator(s: Span) -> IResult<BinaryOperator> {
     BIN_OPS_WITH_BY_PRECEDENCE
         .iter()
         .find_map(|&op| {
@@ -466,10 +465,10 @@ fn binary_operator(s: Span) -> IResult<Span, BinaryOperator> {
                 .ok()
                 .map(|(s, _)| Ok((s, op)))
         })
-        .unwrap_or_else(|| Err(nom::Err::Error(error_position!(s, ErrorKind::Char))))
+        .unwrap_or_else(|| Err(nom::Err::Error(AstError::from(s, None))))
 }
 
-fn function_call(s: Span) -> IResult<Span, Expression> {
+fn function_call(s: Span) -> IResult<Expression> {
     let (s, pos) = position(s)?;
     let (s, name) = snakecase_lower(s)?;
     let (s, scope) = opt(function_scope)(s)?;
@@ -490,22 +489,20 @@ fn function_call(s: Span) -> IResult<Span, Expression> {
     ))
 }
 
-fn function_scope(s: Span) -> IResult<Span, FunctionScope> {
+fn function_scope(s: Span) -> IResult<FunctionScope> {
     let (s, pos) = position(s)?;
     let (s, token) = alt((byte(b'!'), byte(b'?')))(s)?;
-    let token = AsciiChar::try_from(token)
-        .map_err(|_| nom::Err::Failure(error_position!(s, ErrorKind::ParseTo)))?;
     let (s, end_pos) = position(s)?;
     Ok((
         s,
         FunctionScope {
             pos: pos.to(end_pos),
-            token,
+            token: AsciiChar::try_from(token).unwrap(),
         },
     ))
 }
 
-fn parens(s: Span) -> IResult<Span, Expression> {
+fn parens(s: Span) -> IResult<Expression> {
     let (s, pos) = position(s)?;
     let (s, expr) = delimited(byte(b'('), expression, byte(b')'))(s)?;
     let (s, end_pos) = position(s)?;
@@ -518,7 +515,7 @@ fn parens(s: Span) -> IResult<Span, Expression> {
     ))
 }
 
-fn literal(s: Span) -> IResult<Span, Expression> {
+fn literal(s: Span) -> IResult<Expression> {
     let (s, pos) = position(s)?;
     let (s, value) = value(s)?;
     let (s, end_pos) = position(s)?;
@@ -531,7 +528,7 @@ fn literal(s: Span) -> IResult<Span, Expression> {
     ))
 }
 
-fn constant(s: Span) -> IResult<Span, Expression> {
+fn constant(s: Span) -> IResult<Expression> {
     let (s, pos) = position(s)?;
     let (s, name) = not_reserved(snakecase_upper)(s)?;
     let (s, end_pos) = position(s)?;
@@ -544,7 +541,7 @@ fn constant(s: Span) -> IResult<Span, Expression> {
     ))
 }
 
-fn variable(s: Span) -> IResult<Span, Expression> {
+fn variable(s: Span) -> IResult<Expression> {
     let (s, pos) = position(s)?;
     let (s, name) = not_reserved(snakecase_lower)(s)?;
     let (s, end_pos) = position(s)?;
@@ -558,11 +555,11 @@ fn variable(s: Span) -> IResult<Span, Expression> {
 }
 
 #[inline]
-fn value(s: Span) -> IResult<Span, Value> {
+fn value(s: Span) -> IResult<Value> {
     alt((value_bool, value_decimal, value_integer, value_string))(s)
 }
 
-fn value_bool(s: Span) -> IResult<Span, Value> {
+fn value_bool(s: Span) -> IResult<Value> {
     let (s, value) = if let (s, Some(_)) = opt(tag(KEYWORD_TRUE))(s)? {
         (s, true)
     } else {
@@ -572,26 +569,28 @@ fn value_bool(s: Span) -> IResult<Span, Value> {
     Ok((s, Value::Bool(value)))
 }
 
-fn value_integer(s: Span) -> IResult<Span, Value> {
+fn value_integer(s: Span) -> IResult<Value> {
     let (s, i) = digit1(s)?;
     let i = Ascii::from(i.fragment)
         .to_string()
         .parse()
-        .map_err(|_| nom::Err::Failure(error_position!(s, ErrorKind::Digit)))?;
+        .map_err(|_| nom::Err::Failure(AstError::from(s, None)))?;
     Ok((s, Value::Integer(i)))
 }
 
-fn value_decimal(s: Span) -> IResult<Span, Value> {
+fn value_decimal(s: Span) -> IResult<Value> {
     let (s, n) = digit1(s)?;
     let (s, _) = byte(b'.')(s)?;
-    let (s, d) = digit1(s)?;
+    let (s, after_decimal) = position(s)?;
+    let (s, d) = digit1::<Span, AstError>(s)
+        .map_err(|_| failure_from(after_decimal, AstErrorKind::Decimal))?;
     let i = format!("{}.{}", Ascii::from(n.fragment), Ascii::from(d.fragment))
         .parse()
-        .map_err(|_| nom::Err::Failure(error_position!(s, ErrorKind::Float)))?;
+        .map_err(|_| failure_from(s, AstErrorKind::Decimal))?;
     Ok((s, Value::Decimal(i)))
 }
 
-fn value_string(s: Span) -> IResult<Span, Value> {
+fn value_string(s: Span) -> IResult<Value> {
     let (s, str_literal) = delimited(
         byte(b'"'),
         required(escaped(
@@ -601,36 +600,47 @@ fn value_string(s: Span) -> IResult<Span, Value> {
         )),
         byte(b'"'),
     )(s)?;
-    if str_literal.fragment.iter().all(|&c| is_ascii(c)) {
-        Ok((s, Value::String(Ascii::from(str_literal.fragment))))
+    if let Some(&c) = str_literal.fragment.iter().find(|&&c| !is_ascii(c)) {
+        Err(failure_from(s, AstErrorKind::NonAscii(c)))
     } else {
-        Err(nom::Err::Failure(error_position!(s, ErrorKind::Verify)))
+        Ok((s, Value::String(Ascii::from(str_literal.fragment))))
     }
 }
 
-fn snakecase_upper(s: Span) -> IResult<Span, &[u8]> {
+fn snakecase_upper(s: Span) -> IResult<&[u8]> {
     let (s, n) = recognize(separated_nonempty_list(byte(b'_'), take_while1(is_upper)))(s)?;
     Ok((s, n.fragment))
 }
 
-fn snakecase_lower(s: Span) -> IResult<Span, &[u8]> {
+fn snakecase_lower(s: Span) -> IResult<&[u8]> {
     let (s, n) = recognize(separated_nonempty_list(byte(b'_'), take_while1(is_lower)))(s)?;
     Ok((s, n.fragment))
 }
 
-fn byte<I, Error: ParseError<I>>(b: u8) -> impl Fn(I) -> IResult<I, u8, Error>
-where
-    I: Slice<RangeFrom<usize>> + InputIter<Item = u8>,
-{
-    move |i: I| match (i).iter_elements().next().map(|t: u8| (b, t == b)) {
-        Some((b, true)) => Ok((i.slice(1..), b)),
-        _ => Err(nom::Err::Error(Error::from_char(i, char::from(b)))),
+fn byte(b: u8) -> impl Fn(Span) -> IResult<u8> {
+    move |input: Span| match (input).iter_elements().next().map(|t: u8| (b, t)) {
+        Some((b, t)) => {
+            if b == t {
+                Ok((input.slice(1..), b))
+            } else if let Ok(got) = AsciiChar::try_from(t) {
+                Err(error_from(
+                    input,
+                    AstErrorKind::ExpectedCharInstead(AsciiChar::try_from(b).unwrap(), got),
+                ))
+            } else {
+                Err(error_from(input, AstErrorKind::NonAscii(t)))
+            }
+        }
+        None => Err(error_from(
+            input,
+            AstErrorKind::ExpectedChar(AsciiChar::try_from(b).unwrap()),
+        )),
     }
 }
 
-fn trim<'a, O, F>(f: F) -> impl Fn(Span<'a>) -> IResult<Span<'a>, O>
+fn trim<'a, O, F>(f: F) -> impl Fn(Span<'a>) -> IResult<O>
 where
-    F: Fn(Span<'a>) -> IResult<Span<'a>, O>,
+    F: Fn(Span<'a>) -> IResult<O>,
 {
     move |input: Span| {
         let (input, _) = many0(space)(input)?;
@@ -640,22 +650,23 @@ where
     }
 }
 
-fn on_a_line<'a, O, F>(f: F) -> impl Fn(Span<'a>) -> IResult<Span<'a>, O>
+fn on_a_line<'a, O, F>(f: F) -> impl Fn(Span<'a>) -> IResult<O>
 where
-    F: Fn(Span<'a>) -> IResult<Span<'a>, O>,
+    F: Fn(Span<'a>) -> IResult<O>,
 {
     move |input: Span| {
         let (input, _) = many0(alt((space, newline)))(input)?;
         let (input, o) = f(input)?;
         let (input, _) = many0(space)(input)?;
-        let (input, _) = alt((newline, eof))(input)?;
+        let (input, _) = alt((newline, eof))(input)
+            .map_err(|_| failure_from(input, AstErrorKind::ExpectedNewLine))?;
         Ok((input, o))
     }
 }
 
-fn finishes_multiline<'a, O, F>(f: F) -> impl Fn(Span<'a>) -> IResult<Span<'a>, O>
+fn finishes_multiline<'a, O, F>(f: F) -> impl Fn(Span<'a>) -> IResult<O>
 where
-    F: Fn(Span<'a>) -> IResult<Span<'a>, O>,
+    F: Fn(Span<'a>) -> IResult<O>,
 {
     move |input: Span| {
         let (input, _) = many0(alt((space, newline)))(input)?;
@@ -665,43 +676,50 @@ where
 }
 
 #[inline]
-fn space<'a>(input: Span<'a>) -> IResult<Span<'a>, u8> {
+fn space<'a>(input: Span<'a>) -> IResult<u8> {
     byte(b' ')(input)
 }
 
 #[inline]
-fn newline<'a>(input: Span<'a>) -> IResult<Span<'a>, u8> {
+fn newline<'a>(input: Span<'a>) -> IResult<u8> {
     byte(b'\n')(input)
 }
 
 #[inline]
-fn eof<'a, Error: ParseError<Span<'a>>>(input: Span<'a>) -> IResult<Span<'a>, u8, Error> {
+fn eof<'a>(input: Span<'a>) -> IResult<u8> {
     if input.input_len() == 0 {
         Ok((input, b'\0'))
     } else {
-        Err(nom::Err::Error(Error::from_char(
-            input,
-            char::from(input.fragment[0]),
-        )))
+        Err(error_from(input, AstErrorKind::ExpectedEof))
     }
 }
 
-fn not_reserved<'a, O, F>(f: F) -> impl Fn(Span<'a>) -> IResult<Span<'a>, O>
+fn not_reserved<'a, O, F>(f: F) -> impl Fn(Span<'a>) -> IResult<O>
 where
-    F: Fn(Span<'a>) -> IResult<Span<'a>, O>,
+    F: Fn(Span<'a>) -> IResult<O>,
     O: AsBytes,
 {
     move |input: Span| {
         let (new_input, res) = f(input)?;
-        if RESERVED_KEYWORDS.iter().any(|&k| k == res.as_bytes()) {
-            Err(nom::Err::Failure(error_position!(input, ErrorKind::Tag)))
+        if let Some(&k) = RESERVED_KEYWORDS.iter().find(|&&k| k == res.as_bytes()) {
+            Err(failure_from(input, AstErrorKind::ReservedKeyword(k.into())))
         } else {
             Ok((new_input, res))
         }
     }
 }
 
-fn nani_structure<'a>(input: &'a [u8]) -> IResult<Span<'a>, Program<'a>> {
+#[inline]
+fn error_from<'a>(s: Span<'a>, kind: AstErrorKind<'a>) -> nom::Err<AstError<'a>> {
+    nom::Err::Error(AstError::from(s, Some(kind)))
+}
+
+#[inline]
+fn failure_from<'a>(s: Span<'a>, kind: AstErrorKind<'a>) -> nom::Err<AstError<'a>> {
+    nom::Err::Failure(AstError::from(s, Some(kind)))
+}
+
+fn nani_structure<'a>(input: &'a [u8]) -> IResult<Program<'a>> {
     let s = Span::new(input);
     let (s, constants) = many0(on_a_line(constant_assignment))(s)?;
     let (s, functions) = many0(on_a_line(function_definition))(s)?;
@@ -716,23 +734,105 @@ fn nani_structure<'a>(input: &'a [u8]) -> IResult<Span<'a>, Program<'a>> {
     ))
 }
 
-pub fn parse_nani<'a>(input: &'a [u8]) -> Result<Program<'a>, String> {
+pub fn parse_nani<'a>(input: &'a [u8]) -> Result<Program<'a>, AstError> {
     match nani_structure(input) {
         Ok((_, program)) => Ok(program),
-        Err(nom::Err::Failure((s, _))) if s.fragment.len() > 0 => {
-            match AsciiChar::try_from(s.fragment[0]) {
-                Ok(token) => Err(format!(
-                    "Unexpected token [L{} C{}]: {}",
-                    s.line, s.col, token
-                )),
-                Err(_) => Err(format!(
-                    "Unexpected non-ASCII byte at [L{} C{}]: {}",
-                    s.line, s.col, s.fragment[0]
-                )),
-            }
-        }
-        _ => panic!("Unexpected end of parsing"),
+        Err(nom::Err::Error(err)) | Err(nom::Err::Failure(err)) => Err(err),
+        _ => panic!(),
     }
+}
+
+type IResult<'a, O> = Result<(Span<'a>, O), nom::Err<AstError<'a>>>;
+
+pub struct AstError<'a> {
+    input: Span<'a>,
+    explicit_kind: Option<AstErrorKind<'a>>,
+    pub previous: Option<Box<AstError<'a>>>,
+}
+
+impl<'a> AstError<'a> {
+    fn from(input: Span<'a>, kind: Option<AstErrorKind<'a>>) -> Self {
+        Self {
+            input,
+            explicit_kind: kind,
+            previous: None,
+        }
+    }
+
+    fn kind(&self) -> AstErrorKind {
+        if let Some(kind) = self.explicit_kind {
+            kind
+        } else if self.input.fragment.len() > 0 {
+            match AsciiChar::try_from(self.input.fragment[0]) {
+                Ok(token) => AstErrorKind::UnexpectedToken(token),
+                Err(_) => AstErrorKind::NonAscii(self.input.fragment[0]),
+            }
+        } else {
+            AstErrorKind::EndOfInput
+        }
+    }
+}
+
+impl<'a> ParseError<Span<'a>> for AstError<'a> {
+    fn from_error_kind(input: Span<'a>, nom_kind: ErrorKind) -> Self {
+        let explicit_kind = match nom_kind {
+            _ => None,
+        };
+        Self {
+            input,
+            explicit_kind,
+            previous: None,
+        }
+    }
+
+    fn append(input: Span<'a>, nom_kind: ErrorKind, other: Self) -> Self {
+        Self {
+            previous: Some(Box::new(Self::from_error_kind(input, nom_kind))),
+            ..other
+        }
+    }
+}
+
+impl<'a> std::fmt::Display for AstError<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[L{} C{}] ", self.input.line, self.input.col)?;
+        match self.kind() {
+            AstErrorKind::Decimal => write!(f, "Expected number after decimal's '.'"),
+            AstErrorKind::EndOfInput => write!(f, "End of input reached"),
+            AstErrorKind::ExpectedChar(c) => write!(f, "Expected character {}", c),
+            AstErrorKind::ExpectedCharInstead(c, instead) => {
+                write!(f, "Expected character {} but got {} instead", c, instead)
+            }
+            AstErrorKind::ExpectedEof => write!(f, "Expected end of file"),
+            AstErrorKind::ExpectedNewLine => write!(f, "Expected new line"),
+            AstErrorKind::NonAscii(byte) => {
+                write!(f, "Can't use non-ASCII character {}", char::from(byte))
+            }
+            AstErrorKind::ReservedKeyword(keyword) => {
+                write!(f, "Can't use reserved keyword {}", keyword)
+            }
+            AstErrorKind::UnexpectedToken(token) => write!(f, "Unexpected token {}", token),
+        }
+    }
+}
+
+impl<'a> std::fmt::Debug for AstError<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self)
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+enum AstErrorKind<'a> {
+    Decimal,
+    EndOfInput,
+    ExpectedChar(AsciiChar),
+    ExpectedCharInstead(AsciiChar, AsciiChar),
+    ExpectedEof,
+    ExpectedNewLine,
+    NonAscii(u8),
+    ReservedKeyword(Ascii<'a>),
+    UnexpectedToken(AsciiChar),
 }
 
 #[cfg(test)]
