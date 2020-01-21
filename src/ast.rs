@@ -4,7 +4,7 @@ use crate::{
 };
 use nom::{
     branch::alt,
-    bytes::complete::{escaped, is_not, tag, take_while1},
+    bytes::complete::{escaped, is_not, tag, take, take_while1},
     character::complete::{digit1, space0, space1},
     combinator::{cut as required, opt, recognize},
     error::{ErrorKind, ParseError},
@@ -491,15 +491,30 @@ fn function_call(s: Span) -> IResult<Expression> {
 
 fn function_scope(s: Span) -> IResult<FunctionScope> {
     let (s, pos) = position(s)?;
-    let (s, token) = alt((byte(b'!'), byte(b'?')))(s)?;
-    let (s, end_pos) = position(s)?;
-    Ok((
-        s,
-        FunctionScope {
-            pos: pos.to(end_pos),
-            token: AsciiChar::try_from(token).unwrap(),
+    match alt((byte(b'!'), byte(b'?')))(s) {
+        Ok((s, token)) => {
+            let (s, end_pos) = position(s)?;
+            Ok((
+                s,
+                FunctionScope {
+                    pos: pos.to(end_pos),
+                    token: AsciiChar::try_from(token).unwrap(),
+                },
+            ))
+        }
+        // If not a scope, and if we are still calling/defining a function,
+        // the scope is invalid.
+        Err(e) => match tuple((take(1usize), byte(b'(')))(s) {
+            Ok((_, (c, _))) if c.fragment[0] != b'(' => Err(failure_from(
+                s,
+                match AsciiChar::try_from(c.fragment[0]) {
+                    Ok(c) => AstErrorKind::InvalidScope(c),
+                    _ => AstErrorKind::NonAscii(c.fragment[0]),
+                },
+            )),
+            _ => Err(e),
         },
-    ))
+    }
 }
 
 fn parens(s: Span) -> IResult<Expression> {
@@ -805,6 +820,7 @@ impl<'a> std::fmt::Display for AstError<'a> {
             }
             AstErrorKind::ExpectedEof => write!(f, "Expected end of file"),
             AstErrorKind::ExpectedNewLine => write!(f, "Expected new line"),
+            AstErrorKind::InvalidScope(c) => write!(f, "Invalid scope token {}", c),
             AstErrorKind::NonAscii(byte) => {
                 write!(f, "Can't use non-ASCII character {}", char::from(byte))
             }
@@ -822,7 +838,7 @@ impl<'a> std::fmt::Debug for AstError<'a> {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 enum AstErrorKind<'a> {
     Decimal,
     EndOfInput,
@@ -830,6 +846,7 @@ enum AstErrorKind<'a> {
     ExpectedCharInstead(AsciiChar, AsciiChar),
     ExpectedEof,
     ExpectedNewLine,
+    InvalidScope(AsciiChar),
     NonAscii(u8),
     ReservedKeyword(Ascii<'a>),
     UnexpectedToken(AsciiChar),
@@ -888,6 +905,20 @@ mod tests {
                 }]),
             }
         );
+    }
+
+    #[test]
+    fn it_detects_invalid_function_scopes<'a>() {
+        if let nom::Err::Failure(err) = expression(Span::new(&b"foo#(x)"[..])).unwrap_err() {
+            assert_eq!(
+                err.explicit_kind,
+                Some(AstErrorKind::InvalidScope(
+                    AsciiChar::try_from(b'#').unwrap()
+                ))
+            )
+        } else {
+            panic!()
+        }
     }
 
     #[test]
