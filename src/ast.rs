@@ -9,135 +9,154 @@ use nom::{
     combinator::{cut as required, opt, recognize},
     error::{ErrorKind, ParseError},
     multi::{many0, separated_list, separated_nonempty_list},
-    sequence::{delimited, tuple},
+    sequence::{delimited, preceded, tuple},
     AsBytes, InputIter, InputLength, Slice,
 };
 use std::convert::TryFrom;
 
+pub trait Positioned {
+    fn get_pos(&self) -> &AstSpan;
+}
+
 #[derive(Debug, PartialEq)]
 pub struct Program<'a> {
-    constants: Vec<ConstantAssignment<'a>>,
-    functions: Vec<FunctionDefinition<'a>>,
+    pub constants: Vec<Constant<'a>>,
+    pub props: Vec<Property<'a>>,
+    pub functions: Vec<FunctionDefinition<'a>>,
 }
 
 #[derive(Debug, PartialEq)]
-struct ConstantAssignment<'a> {
-    name: Ascii<'a>,
-    expression: Expression<'a>,
-    pos: AstSpan,
+pub struct Constant<'a> {
+    pub identifier: ConstantIdentifier<'a>,
+    pub expression: Expression<'a>,
 }
 
 #[derive(Debug, PartialEq)]
-struct FunctionDefinition<'a> {
-    pos: AstSpan,
-    name: Ascii<'a>,
-    scope: Option<FunctionScope>,
-    args: Vec<FunctionArgument<'a>>,
-    body: Vec<Statement<'a>>,
+pub struct Property<'a> {
+    pub identifier: VariableIdentifier<'a>,
+    pub initial_value: Expression<'a>,
 }
 
 #[derive(Debug, PartialEq)]
-struct FunctionArgument<'a> {
-    pos: AstSpan,
-    name: Ascii<'a>,
-    vartype: Vartype,
+pub struct FunctionDefinition<'a> {
+    pub identifier: FunctionIdentifier<'a>,
+    pub args: Vec<FunctionArgument<'a>>,
+    pub return_type: Option<TypeAnnotation>,
+    pub body: Vec<Statement<'a>>,
 }
 
 #[derive(Debug, PartialEq)]
-enum Statement<'a> {
+pub struct FunctionArgument<'a> {
+    pub pos: AstSpan,
+    pub name: Ascii<'a>,
+    pub annotation: TypeAnnotation,
+}
+
+impl<'a> Positioned for FunctionArgument<'a> {
+    fn get_pos(&self) -> &AstSpan {
+        &self.pos
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct ConstantIdentifier<'a> {
+    pub name: Ascii<'a>,
+    pub pos: AstSpan,
+}
+
+impl<'a> Positioned for ConstantIdentifier<'a> {
+    fn get_pos(&self) -> &AstSpan {
+        &self.pos
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct VariableIdentifier<'a> {
+    pub name: Ascii<'a>,
+    pub pos: AstSpan,
+}
+
+impl<'a> Positioned for VariableIdentifier<'a> {
+    fn get_pos(&self) -> &AstSpan {
+        &self.pos
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct FunctionIdentifier<'a> {
+    pub pos: AstSpan,
+    pub name: Ascii<'a>,
+    pub scope: Option<FunctionScope>,
+}
+
+impl<'a> Positioned for FunctionIdentifier<'a> {
+    fn get_pos(&self) -> &AstSpan {
+        &self.pos
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Statement<'a> {
     VariableAssignment {
-        name: Ascii<'a>,
+        identifier: VariableIdentifier<'a>,
         expression: Expression<'a>,
-        pos: AstSpan,
     },
     FunctionCall {
-        pos: AstSpan,
-        name: Ascii<'a>,
-        scope: Option<FunctionScope>,
-        args: Box<Vec<Expression<'a>>>,
+        identifier: FunctionIdentifier<'a>,
+        args: Vec<Expression<'a>>,
     },
     If {
         pos: AstSpan,
         condition: Expression<'a>,
-        body: Box<Vec<Statement<'a>>>,
+        body: Vec<Statement<'a>>,
     },
     While {
         pos: AstSpan,
         condition: Expression<'a>,
-        body: Box<Vec<Statement<'a>>>,
+        body: Vec<Statement<'a>>,
     },
 }
 
 #[derive(Debug, PartialEq)]
-enum Expression<'a> {
-    Parens {
-        pos: AstSpan,
-        expression: Box<Expression<'a>>,
-    },
+pub enum Expression<'a> {
     FunctionCall {
-        pos: AstSpan,
-        name: Ascii<'a>,
-        scope: Option<FunctionScope>,
-        args: Box<Vec<Expression<'a>>>,
+        identifier: FunctionIdentifier<'a>,
+        args: Vec<Expression<'a>>,
     },
     BinaryOperation {
+        pos: AstSpan,
         operator: BinaryOperator,
         left: Box<Expression<'a>>,
         right: Box<Expression<'a>>,
     },
-    Constant {
-        pos: AstSpan,
-        name: Ascii<'a>,
-    },
-    Variable {
-        pos: AstSpan,
-        name: Ascii<'a>,
-    },
+    Constant(ConstantIdentifier<'a>),
+    Variable(VariableIdentifier<'a>),
     Literal {
         pos: AstSpan,
         value: Value<'a>,
     },
 }
 
-impl<'a> Expression<'a> {
-    pub fn get_pos(&self) -> AstSpan {
+impl<'a> Positioned for Expression<'a> {
+    fn get_pos(&self) -> &AstSpan {
         match self {
-            &Expression::Parens { pos, .. } => pos,
-            &Expression::FunctionCall { pos, .. } => pos,
-            &Expression::Constant { pos, .. } => pos,
-            &Expression::Variable { pos, .. } => pos,
-            &Expression::Literal { pos, .. } => pos,
-            Expression::BinaryOperation { left, right, .. } => {
-                let AstSpan {
-                    offset, line, col, ..
-                } = left.get_pos();
-                let AstSpan {
-                    offset: end_offset,
-                    line: end_line,
-                    col: end_col,
-                    ..
-                } = right.get_pos();
-                AstSpan {
-                    offset,
-                    line,
-                    col,
-                    end_offset,
-                    end_line,
-                    end_col,
-                }
-            }
+            Expression::FunctionCall { identifier, .. } => &identifier.pos,
+            Expression::Constant(identifier) => &identifier.pos,
+            Expression::Variable(identifier) => &identifier.pos,
+            Expression::Literal { pos, .. } => &pos,
+            Expression::BinaryOperation { pos, .. } => &pos,
         }
     }
 }
 
 #[derive(Debug, PartialEq)]
-struct FunctionScope {
-    pos: AstSpan,
-    token: AsciiChar,
+pub struct FunctionScope {
+    pub pos: AstSpan,
+    pub token: AsciiChar,
 }
 
 #[derive(Debug, PartialEq)]
-enum Value<'a> {
+pub enum Value<'a> {
     Bool(bool),
     Integer(i32),
     Decimal(f32),
@@ -145,12 +164,39 @@ enum Value<'a> {
 }
 
 #[derive(Debug, PartialEq)]
-enum Vartype {
-    Inferred,
+pub struct TypeAnnotation {
+    pub pos: AstSpan,
+    pub vartype: Vartype,
+}
+
+impl Positioned for TypeAnnotation {
+    fn get_pos(&self) -> &AstSpan {
+        &self.pos
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum Vartype {
+    Bool,
+    Integer,
+    Decimal,
+    Function(Vec<Vartype>, Box<Option<Vartype>>),
+    String,
+}
+
+impl<'a> From<&'a Value<'a>> for Vartype {
+    fn from(v: &'a Value) -> Vartype {
+        match v {
+            Value::Bool(_) => Vartype::Bool,
+            Value::Integer(_) => Vartype::Integer,
+            Value::Decimal(_) => Vartype::Decimal,
+            Value::String(_) => Vartype::String,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Copy, Clone)]
-enum BinaryOperator {
+pub enum BinaryOperator {
     And,
     Or,
     Eq,
@@ -240,6 +286,8 @@ const KEYWORD_FALSE: &[u8] = b"false";
 const KEYWORD_RETURN: &[u8] = b"return";
 const KEYWORD_BREAK: &[u8] = b"break";
 const KEYWORD_CONTINUE: &[u8] = b"continue";
+const KEYWORD_PROP: &[u8] = b"prop";
+const KEYWORD_VAR: &[u8] = b"var";
 
 const RESERVED_KEYWORDS: &[&[u8]] = &[
     KEYWORD_IF,
@@ -250,9 +298,11 @@ const RESERVED_KEYWORDS: &[&[u8]] = &[
     KEYWORD_RETURN,
     KEYWORD_BREAK,
     KEYWORD_CONTINUE,
+    KEYWORD_PROP,
+    KEYWORD_VAR,
 ];
 
-fn constant_assignment(s: Span) -> IResult<ConstantAssignment> {
+fn constant_assignment(s: Span) -> IResult<Constant> {
     let (s, pos) = position(s)?;
     let (s, name) = not_reserved(snakecase_upper)(s)?;
     let (s, _) = required(delimited(space0, byte(b'='), space0))(s)?;
@@ -260,10 +310,32 @@ fn constant_assignment(s: Span) -> IResult<ConstantAssignment> {
     let (s, end_pos) = position(s)?;
     return Ok((
         s,
-        ConstantAssignment {
-            name: Ascii::from(name),
+        Constant {
+            identifier: ConstantIdentifier {
+                pos: pos.to(end_pos),
+                name: Ascii::from(name),
+            },
             expression: expr,
-            pos: pos.to(end_pos),
+        },
+    ));
+}
+
+fn property_assignment(s: Span) -> IResult<Property> {
+    let (s, pos) = position(s)?;
+    let (s, _) = tag(KEYWORD_PROP)(s)?;
+    let (s, _) = space1(s)?;
+    let (s, name) = required(not_reserved(snakecase_lower))(s)?;
+    let (s, _) = required(delimited(space0, byte(b'='), space0))(s)?;
+    let (s, initial_value) = required(expression)(s)?;
+    let (s, end_pos) = position(s)?;
+    return Ok((
+        s,
+        Property {
+            identifier: VariableIdentifier {
+                pos: pos.to(end_pos),
+                name: Ascii::from(name),
+            },
+            initial_value,
         },
     ));
 }
@@ -286,10 +358,13 @@ fn function_definition(s: Span) -> IResult<FunctionDefinition> {
     Ok((
         s,
         FunctionDefinition {
-            pos: pos.to(end_pos),
-            name: Ascii::from(name),
-            scope,
+            identifier: FunctionIdentifier {
+                pos: pos.to(end_pos),
+                name: Ascii::from(name),
+                scope,
+            },
             args,
+            return_type: None,
             body,
         },
     ))
@@ -298,15 +373,63 @@ fn function_definition(s: Span) -> IResult<FunctionDefinition> {
 fn function_argument(s: Span) -> IResult<FunctionArgument> {
     let (s, pos) = position(s)?;
     let (s, name) = not_reserved(snakecase_lower)(s)?;
+    let (s, annotation) = required(type_annotation)(s)?;
     let (s, end_pos) = position(s)?;
     Ok((
         s,
         FunctionArgument {
             pos: pos.to(end_pos),
             name: Ascii::from(name),
-            vartype: Vartype::Inferred,
+            annotation,
         },
     ))
+}
+
+fn type_annotation(s: Span) -> IResult<TypeAnnotation> {
+    let (s, pos) = position(s)?;
+    let (s, _) = delimited(space0, byte(b':'), space0)(s)?;
+    let (s, vartype) = required(vartype)(s)?;
+    let (s, end_pos) = position(s)?;
+    Ok((
+        s,
+        TypeAnnotation {
+            pos: pos.to(end_pos),
+            vartype,
+        },
+    ))
+}
+
+fn vartype(s: Span) -> IResult<Vartype> {
+    alt((
+        vartype_bool,
+        vartype_integer,
+        vartype_decimal,
+        vartype_string,
+    ))(s)
+}
+
+#[inline]
+fn vartype_bool(s: Span) -> IResult<Vartype> {
+    let (s, _) = tag(&b"bool"[..])(s)?;
+    Ok((s, Vartype::Bool))
+}
+
+#[inline]
+fn vartype_integer(s: Span) -> IResult<Vartype> {
+    let (s, _) = tag(&b"integer"[..])(s)?;
+    Ok((s, Vartype::Integer))
+}
+
+#[inline]
+fn vartype_decimal(s: Span) -> IResult<Vartype> {
+    let (s, _) = tag(&b"decimal"[..])(s)?;
+    Ok((s, Vartype::Decimal))
+}
+
+#[inline]
+fn vartype_string(s: Span) -> IResult<Vartype> {
+    let (s, _) = tag(&b"string"[..])(s)?;
+    Ok((s, Vartype::String))
 }
 
 #[inline]
@@ -321,22 +444,8 @@ fn statement(s: Span) -> IResult<Statement> {
 
 fn function_call_statement(s: Span) -> IResult<Statement> {
     let (s, fncall) = function_call(s)?;
-    if let Expression::FunctionCall {
-        pos,
-        name,
-        scope,
-        args,
-    } = fncall
-    {
-        Ok((
-            s,
-            Statement::FunctionCall {
-                pos,
-                name,
-                scope,
-                args,
-            },
-        ))
+    if let Expression::FunctionCall { identifier, args } = fncall {
+        Ok((s, Statement::FunctionCall { identifier, args }))
     } else {
         panic!()
     }
@@ -351,9 +460,11 @@ fn variable_assignment(s: Span) -> IResult<Statement> {
     return Ok((
         s,
         Statement::VariableAssignment {
-            name: Ascii::from(name),
+            identifier: VariableIdentifier {
+                pos: pos.to(end_pos),
+                name: Ascii::from(name),
+            },
             expression: expr,
-            pos: pos.to(end_pos),
         },
     ));
 }
@@ -373,7 +484,7 @@ fn if_statement(s: Span) -> IResult<Statement> {
         Statement::If {
             pos: pos.to(end_pos),
             condition: expr,
-            body: Box::new(body),
+            body,
         },
     ));
 }
@@ -393,7 +504,7 @@ fn while_statement(s: Span) -> IResult<Statement> {
         Statement::While {
             pos: pos.to(end_pos),
             condition: expr,
-            body: Box::new(body),
+            body,
         },
     ));
 }
@@ -413,6 +524,7 @@ fn binary_operations_aggregate<'a>(
     } else if ops.len() == 1 {
         let (operator, right) = ops.pop().unwrap();
         Expression::BinaryOperation {
+            pos: left.get_pos().to(&right.get_pos()),
             operator,
             left: Box::new(left),
             right: Box::new(right),
@@ -433,10 +545,13 @@ fn binary_operations_aggregate<'a>(
 
         let right_ops = ops.split_off(i + 1);
         let (operator, right) = ops.pop().unwrap();
+        let left = binary_operations_aggregate(left, ops);
+        let right = binary_operations_aggregate(right, right_ops);
         Expression::BinaryOperation {
+            pos: left.get_pos().to(&right.get_pos()),
             operator,
-            left: Box::new(binary_operations_aggregate(left, ops)),
-            right: Box::new(binary_operations_aggregate(right, right_ops)),
+            left: Box::new(left),
+            right: Box::new(right),
         }
     }
 }
@@ -481,10 +596,12 @@ fn function_call(s: Span) -> IResult<Expression> {
     Ok((
         s,
         Expression::FunctionCall {
-            pos: pos.to(end_pos),
-            name: Ascii::from(name),
-            scope,
-            args: Box::new(args),
+            identifier: FunctionIdentifier {
+                pos: pos.to(end_pos),
+                name: Ascii::from(name),
+                scope,
+            },
+            args,
         },
     ))
 }
@@ -518,16 +635,7 @@ fn function_scope(s: Span) -> IResult<FunctionScope> {
 }
 
 fn parens(s: Span) -> IResult<Expression> {
-    let (s, pos) = position(s)?;
-    let (s, expr) = delimited(byte(b'('), expression, byte(b')'))(s)?;
-    let (s, end_pos) = position(s)?;
-    Ok((
-        s,
-        Expression::Parens {
-            expression: Box::from(expr),
-            pos: pos.to(end_pos),
-        },
-    ))
+    delimited(byte(b'('), expression, byte(b')'))(s)
 }
 
 fn literal(s: Span) -> IResult<Expression> {
@@ -549,10 +657,10 @@ fn constant(s: Span) -> IResult<Expression> {
     let (s, end_pos) = position(s)?;
     Ok((
         s,
-        Expression::Constant {
+        Expression::Constant(ConstantIdentifier {
             pos: pos.to(end_pos),
             name: Ascii::from(name),
-        },
+        }),
     ))
 }
 
@@ -562,10 +670,10 @@ fn variable(s: Span) -> IResult<Expression> {
     let (s, end_pos) = position(s)?;
     Ok((
         s,
-        Expression::Variable {
+        Expression::Variable(VariableIdentifier {
             pos: pos.to(end_pos),
             name: Ascii::from(name),
-        },
+        }),
     ))
 }
 
@@ -737,6 +845,7 @@ fn failure_from<'a>(s: Span<'a>, kind: AstErrorKind<'a>) -> nom::Err<AstError<'a
 fn nani_structure<'a>(input: &'a [u8]) -> IResult<Program<'a>> {
     let s = Span::new(input);
     let (s, constants) = many0(on_a_line(constant_assignment))(s)?;
+    let (s, props) = many0(on_a_line(property_assignment))(s)?;
     let (s, functions) = many0(on_a_line(function_definition))(s)?;
     let (s, _) = many0(alt((space, newline)))(s)?;
     let (s, _) = required(eof)(s)?;
@@ -744,6 +853,7 @@ fn nani_structure<'a>(input: &'a [u8]) -> IResult<Program<'a>> {
         s,
         Program {
             constants,
+            props,
             functions,
         },
     ))
@@ -881,28 +991,31 @@ mod tests {
                     ..expect_inline(0, 1, 1, 36)
                 },
                 condition: Expression::BinaryOperation {
+                    pos: expect_inline(6, 1, 7, 6),
                     operator: BinaryOperator::Lt,
-                    left: Box::new(Expression::Variable {
+                    left: Box::new(Expression::Variable(VariableIdentifier {
                         pos: expect_inline(6, 1, 7, 1),
                         name: Ascii::from(&b"x"[..]),
-                    }),
+                    })),
                     right: Box::new(Expression::Literal {
                         pos: expect_inline(10, 1, 11, 2),
                         value: Value::Integer(42),
                     }),
                 },
-                body: Box::new(vec![Statement::FunctionCall {
-                    pos: expect_inline(17, 2, 3, 17),
-                    name: Ascii::from(&b"draw_particle"[..]),
-                    scope: Some(FunctionScope {
-                        token: AsciiChar::try_from(b'!').unwrap(),
-                        pos: expect_inline(30, 2, 16, 1),
-                    }),
-                    args: Box::new(vec![Expression::Variable {
+                body: vec![Statement::FunctionCall {
+                    identifier: FunctionIdentifier {
+                        pos: expect_inline(17, 2, 3, 17),
+                        name: Ascii::from(&b"draw_particle"[..]),
+                        scope: Some(FunctionScope {
+                            token: AsciiChar::try_from(b'!').unwrap(),
+                            pos: expect_inline(30, 2, 16, 1),
+                        }),
+                    },
+                    args: vec![Expression::Variable(VariableIdentifier {
                         pos: expect_inline(32, 2, 18, 1),
                         name: Ascii::from(&b"x"[..]),
-                    }]),
-                }]),
+                    })],
+                }],
             }
         );
     }
@@ -927,22 +1040,24 @@ mod tests {
         assert_eq!(
             c,
             Expression::BinaryOperation {
+                pos: expect_inline(0, 1, 1, 11),
                 operator: BinaryOperator::Or,
                 left: Box::new(Expression::BinaryOperation {
+                    pos: expect_inline(0, 1, 1, 6),
                     operator: BinaryOperator::And,
-                    left: Box::new(Expression::Variable {
+                    left: Box::new(Expression::Variable(VariableIdentifier {
                         pos: expect_inline(0, 1, 1, 1),
                         name: Ascii::from(&b"a"[..]),
-                    }),
-                    right: Box::new(Expression::Variable {
+                    })),
+                    right: Box::new(Expression::Variable(VariableIdentifier {
                         pos: expect_inline(5, 1, 6, 1),
                         name: Ascii::from(&b"b"[..]),
-                    }),
+                    })),
                 }),
-                right: Box::new(Expression::Variable {
+                right: Box::new(Expression::Variable(VariableIdentifier {
                     pos: expect_inline(10, 1, 11, 1),
                     name: Ascii::from(&b"c"[..]),
-                }),
+                })),
             },
         );
     }
@@ -952,13 +1067,15 @@ mod tests {
         let (_, c) = constant_assignment(Span::new(&b"THIS_IS_CONSTANT = 42"[..])).unwrap();
         assert_eq!(
             c,
-            ConstantAssignment {
-                name: Ascii::from(&b"THIS_IS_CONSTANT"[..]),
+            Constant {
+                identifier: ConstantIdentifier {
+                    pos: expect_inline(0, 1, 1, 21),
+                    name: Ascii::from(&b"THIS_IS_CONSTANT"[..]),
+                },
                 expression: Expression::Literal {
                     value: Value::Integer(42),
                     pos: expect_inline(19, 1, 20, 2)
                 },
-                pos: expect_inline(0, 1, 1, 21),
             }
         );
     }
@@ -985,95 +1102,117 @@ initialize() {
             program,
             Program {
                 constants: vec![
-                    ConstantAssignment {
-                        name: Ascii::from(&b"THIS_IS_CONSTANT"[..]),
+                    Constant {
+                        identifier: ConstantIdentifier {
+                            pos: expect_inline(1, 2, 1, 21),
+                            name: Ascii::from(&b"THIS_IS_CONSTANT"[..]),
+                        },
                         expression: Expression::Literal {
                             value: Value::Integer(42),
                             pos: expect_inline(20, 2, 20, 2)
                         },
-                        pos: expect_inline(1, 2, 1, 21)
                     },
-                    ConstantAssignment {
-                        name: Ascii::from(&b"THIS_ALSO_IS"[..]),
+                    Constant {
+                        identifier: ConstantIdentifier {
+                            pos: expect_inline(23, 3, 1, 18),
+                            name: Ascii::from(&b"THIS_ALSO_IS"[..]),
+                        },
                         expression: Expression::Literal {
                             value: Value::Integer(666),
                             pos: expect_inline(38, 3, 16, 3)
                         },
-                        pos: expect_inline(23, 3, 1, 18)
                     }
                 ],
+                props: vec![],
                 functions: vec![FunctionDefinition {
-                    pos: AstSpan {
-                        offset: 43,
-                        line: 5,
-                        col: 1,
-                        end_offset: 127,
-                        end_line: 12,
-                        end_col: 1,
+                    identifier: FunctionIdentifier {
+                        pos: AstSpan {
+                            offset: 43,
+                            line: 5,
+                            col: 1,
+                            end_offset: 127,
+                            end_line: 12,
+                            end_col: 1,
+                        },
+                        name: Ascii::from(&b"initialize"[..]),
+                        scope: None,
                     },
-                    name: Ascii::from(&b"initialize"[..]),
-                    scope: None,
                     args: vec![],
+                    return_type: None,
                     body: vec![
                         Statement::VariableAssignment {
-                            name: Ascii::from(&b"x"[..]),
+                            identifier: VariableIdentifier {
+                                pos: expect_inline(60, 6, 3, 6),
+                                name: Ascii::from(&b"x"[..]),
+                            },
                             expression: Expression::Literal {
                                 pos: expect_inline(64, 6, 7, 2),
                                 value: Value::Integer(20),
                             },
-                            pos: expect_inline(60, 6, 3, 6),
                         },
                         Statement::VariableAssignment {
-                            name: Ascii::from(&b"d"[..]),
+                            identifier: VariableIdentifier {
+                                pos: expect_inline(69, 7, 3, 7),
+                                name: Ascii::from(&b"d"[..]),
+                            },
                             expression: Expression::Literal {
                                 pos: expect_inline(73, 7, 7, 3),
                                 value: Value::Decimal(2.5),
                             },
-                            pos: expect_inline(69, 7, 3, 7),
                         },
                         Statement::VariableAssignment {
-                            name: Ascii::from(&b"b"[..]),
+                            identifier: VariableIdentifier {
+                                pos: expect_inline(79, 8, 3, 8),
+                                name: Ascii::from(&b"b"[..]),
+                            },
                             expression: Expression::Literal {
                                 pos: expect_inline(83, 8, 7, 4),
                                 value: Value::Bool(true),
                             },
-                            pos: expect_inline(79, 8, 3, 8),
                         },
                         Statement::VariableAssignment {
-                            name: Ascii::from(&b"s"[..]),
+                            identifier: VariableIdentifier {
+                                pos: expect_inline(90, 9, 3, 9),
+                                name: Ascii::from(&b"s"[..]),
+                            },
                             expression: Expression::Literal {
                                 pos: expect_inline(94, 9, 7, 5),
                                 value: Value::String(Ascii::from(&b"abc"[..])),
                             },
-                            pos: expect_inline(90, 9, 3, 9),
                         },
                         Statement::FunctionCall {
-                            name: Ascii::from(&b"foo"[..]),
-                            scope: Some(FunctionScope {
-                                token: AsciiChar::try_from(b'!').unwrap(),
-                                pos: expect_inline(105, 10, 6, 1),
-                            }),
-                            args: Box::new(vec![]),
-                            pos: expect_inline(102, 10, 3, 6),
+                            identifier: FunctionIdentifier {
+                                pos: expect_inline(102, 10, 3, 6),
+                                name: Ascii::from(&b"foo"[..]),
+                                scope: Some(FunctionScope {
+                                    token: AsciiChar::try_from(b'!').unwrap(),
+                                    pos: expect_inline(105, 10, 6, 1),
+                                }),
+                            },
+                            args: vec![],
                         },
                         Statement::VariableAssignment {
-                            name: Ascii::from(&b"r"[..]),
+                            identifier: VariableIdentifier {
+                                pos: expect_inline(111, 11, 3, 14),
+                                name: Ascii::from(&b"r"[..]),
+                            },
                             expression: Expression::FunctionCall {
-                                pos: expect_inline(115, 11, 7, 10),
-                                name: Ascii::from(&b"bar"[..]),
-                                scope: None,
-                                args: Box::new(vec![
-                                    Expression::Variable {
+                                identifier: FunctionIdentifier {
+                                    pos: expect_inline(115, 11, 7, 10),
+                                    name: Ascii::from(&b"bar"[..]),
+                                    scope: None,
+                                },
+                                args: vec![
+                                    Expression::Variable(VariableIdentifier {
                                         pos: expect_inline(119, 11, 11, 1),
                                         name: Ascii::from(&b"x"[..]),
-                                    },
+                                    }),
                                     Expression::Literal {
                                         pos: expect_inline(122, 11, 14, 2),
                                         value: Value::Integer(42),
                                     }
-                                ]),
+                                ],
                             },
-                            pos: expect_inline(111, 11, 3, 14),
                         },
                     ],
                 }],

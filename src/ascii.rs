@@ -1,6 +1,6 @@
 use std::convert::TryFrom;
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Hash, Eq, PartialEq)]
 pub struct Ascii<'a> {
     pub bytes: &'a [u8],
 }
@@ -25,7 +25,7 @@ impl<'a> From<&'a [u8]> for Ascii<'a> {
     }
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Hash, Eq, PartialEq)]
 pub struct AsciiChar {
     pub byte: u8,
 }

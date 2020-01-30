@@ -18,6 +18,28 @@ pub struct AstSpan {
     pub end_col: usize,
 }
 
+impl AstSpan {
+    pub fn to(&self, other: &AstSpan) -> AstSpan {
+        let AstSpan {
+            offset, line, col, ..
+        } = *self;
+        let AstSpan {
+            end_offset,
+            end_line,
+            end_col,
+            ..
+        } = *other;
+        AstSpan {
+            offset,
+            line,
+            col,
+            end_offset,
+            end_line,
+            end_col,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Span<'a> {
     pub offset: usize,
